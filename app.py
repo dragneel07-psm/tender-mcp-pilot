@@ -79,6 +79,10 @@ def conn():
     db.execute("""create table if not exists deliveries (
         notice_id text, delivered_at text, status text, detail text
     )""")
+    db.execute("""create table if not exists source_health (
+        source_id text primary key, last_status text, last_detail text,
+        last_run_at text, last_success_at text, consecutive_failures integer not null default 0
+    )""")
     return db
 
 PROVINCES={"1":"Koshi","2":"Madhesh","3":"Bagmati","4":"Gandaki","5":"Lumbini","6":"Karnali","7":"Sudurpashchim"}
@@ -220,6 +224,32 @@ def relevant(text, source):
     lower=text.lower()
     return any(word.lower() in lower for word in TENDER_WORDS + tuple(source.get("keywords", [])))
 
+def record_health(db, source_id, ok, detail, now):
+    """Upsert a source's fetch health. Success resets the failure streak; failure extends it."""
+    if ok:
+        db.execute("""insert into source_health (source_id,last_status,last_detail,last_run_at,last_success_at,consecutive_failures)
+            values (?,'ok',?,?,?,0)
+            on conflict(source_id) do update set last_status='ok', last_detail=excluded.last_detail,
+                last_run_at=excluded.last_run_at, last_success_at=excluded.last_success_at, consecutive_failures=0""",
+            (source_id, detail[:500], now, now))
+    else:
+        db.execute("""insert into source_health (source_id,last_status,last_detail,last_run_at,last_success_at,consecutive_failures)
+            values (?,'error',?,?,null,1)
+            on conflict(source_id) do update set last_status='error', last_detail=excluded.last_detail,
+                last_run_at=excluded.last_run_at, consecutive_failures=source_health.consecutive_failures+1""",
+            (source_id, detail[:500], now))
+
+def health_skip_settings():
+    threshold=max(1, int(os.getenv("SOURCE_FAILURE_SKIP_THRESHOLD", "5")))
+    cooldown_minutes=max(0, int(os.getenv("SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES", "360")))
+    return threshold, cooldown_minutes
+def should_skip(db, source_id, threshold, cooldown_minutes):
+    """True when a source has failed threshold+ times in a row and its cooldown hasn't elapsed yet."""
+    row=db.execute("select consecutive_failures, last_run_at from source_health where source_id=?", (source_id,)).fetchone()
+    if not row or row["consecutive_failures"] < threshold or not row["last_run_at"]: return False
+    elapsed=datetime.now(timezone.utc) - datetime.fromisoformat(row["last_run_at"])
+    return elapsed.total_seconds() < cooldown_minutes * 60
+
 def send_whatsapp_alert(notice):
     required = ("WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME")
     if not all(os.getenv(key) for key in required):
@@ -274,10 +304,14 @@ def collect_one(source):
         for notice in new_notices:
             status, detail = send_whatsapp_alert(notice)
             db.execute("insert into deliveries values (?,?,?,?)", (notice["id"], now, status, detail))
-        db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"ok",f"{added} new notices")); db.commit()
+        db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"ok",f"{added} new notices"))
+        record_health(db, source["id"], True, f"{added} new notices", now)
+        db.commit()
         return {"source":source["name"],"status":"ok","new":added}
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"error",str(exc))); db.commit()
+        db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"error",str(exc)))
+        record_health(db, source["id"], False, str(exc), now)
+        db.commit()
         return {"source":source["name"],"status":"error","detail":str(exc)}
     finally: db.close()
 
@@ -286,9 +320,25 @@ def collect_all(source_id=None):
     if source_id and not selected:
         raise ValueError(f"Unknown source: {source_id}")
     if not selected: return []
-    workers=min(len(selected), max(1, int(os.getenv("COLLECTOR_WORKERS", "8"))))
+    to_run, skipped = selected, []
+    if not source_id:
+        # Scheduled sweeps skip sources with a long failure streak until their cooldown elapses,
+        # so chronically dead sites stop eating a full timeout*retries budget every cycle.
+        # A manually requested single-source collection (source_id set) always runs regardless.
+        threshold, cooldown_minutes = health_skip_settings()
+        db=conn()
+        try:
+            to_run, skipped = [], []
+            for s in selected:
+                if should_skip(db, s["id"], threshold, cooldown_minutes):
+                    skipped.append({"source":s["name"],"status":"skipped","detail":f"{threshold}+ consecutive failures; retrying after cooldown"})
+                else:
+                    to_run.append(s)
+        finally: db.close()
+    if not to_run: return skipped
+    workers=min(len(to_run), max(1, int(os.getenv("COLLECTOR_WORKERS", "8"))))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(collect_one, selected))
+        return list(pool.map(collect_one, to_run)) + skipped
 def list_notices(query="", limit=50, source_id=""):
     limit=max(1, min(int(limit), 100))
     db=conn(); sql="select * from notices"; args=[]; conditions=[]
@@ -300,12 +350,20 @@ def list_notices(query="", limit=50, source_id=""):
     rows=[dict(r) for r in db.execute(sql+" order by discovered_at desc limit ?", args+[limit])]; db.close(); return rows
 def source_summary():
     db=conn(); cutoff=datetime.now(timezone.utc).timestamp() - 86400; recent_cutoff=datetime.now(timezone.utc).timestamp() - 172800; result=[]
+    threshold, cooldown_minutes = health_skip_settings()
     for source in sources():
         rows=db.execute("select discovered_at from notices where source_id=?", (source["id"],)).fetchall()
         new=sum(1 for r in rows if datetime.fromisoformat(r["discovered_at"]).timestamp() >= cutoff)
         recent=sum(1 for r in rows if datetime.fromisoformat(r["discovered_at"]).timestamp() >= recent_cutoff)
         unread=db.execute("select count(*) from notices where source_id=? and seen_at is null", (source["id"],)).fetchone()[0]
-        result.append({"id":source["id"],"name":source["name"],"url":source["url"],"province":source.get("province","National / other"),"notice_count":len(rows),"new_count":new,"recent_count_48h":recent,"unread_count":unread,"favorite":source.get("favorite",False)})
+        health=db.execute("select last_status, last_detail, last_run_at, last_success_at, consecutive_failures from source_health where source_id=?", (source["id"],)).fetchone()
+        result.append({"id":source["id"],"name":source["name"],"url":source["url"],"province":source.get("province","National / other"),"notice_count":len(rows),"new_count":new,"recent_count_48h":recent,"unread_count":unread,"favorite":source.get("favorite",False),
+            "last_status":health["last_status"] if health else None,
+            "last_error":health["last_detail"] if health and health["last_status"]=="error" else None,
+            "last_run_at":health["last_run_at"] if health else None,
+            "last_success_at":health["last_success_at"] if health else None,
+            "consecutive_failures":health["consecutive_failures"] if health else 0,
+            "skipped":should_skip(db, source["id"], threshold, cooldown_minutes)})
     db.close(); return result
 def alert_summary():
     configured = all(os.getenv(key) for key in ("WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME"))
@@ -426,8 +484,15 @@ def serve():
     interval_minutes = int(os.getenv("AUTO_COLLECT_INTERVAL_MINUTES", "60"))
     def scheduled_collection():
         while True:
+            started=time.monotonic()
             print("Automatic collection started", flush=True)
-            for result in collect_all(): print(json.dumps(result, ensure_ascii=False), flush=True)
+            results=collect_all()
+            counts={}
+            for result in results:
+                counts[result["status"]]=counts.get(result["status"],0)+1
+                if result["status"]=="error": print(json.dumps(result, ensure_ascii=False), flush=True)
+            elapsed=round(time.monotonic()-started,1)
+            print(f"Automatic collection finished in {elapsed}s: {json.dumps(counts, ensure_ascii=False)}", flush=True)
             time.sleep(max(interval_minutes, 5) * 60)
     threading.Thread(target=scheduled_collection, daemon=True).start()
     host=os.getenv("HOST", "127.0.0.1"); port=int(os.getenv("PORT","8787"))

@@ -44,6 +44,9 @@ The Railway service runs the collector, database, source registry, dashboard, an
    HOST=0.0.0.0
    DATA_DIR=/app/data
    AUTO_COLLECT_INTERVAL_MINUTES=60
+   COLLECTOR_WORKERS=40
+   SOURCE_FAILURE_SKIP_THRESHOLD=5
+   SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES=360
    REQUIRE_AUTH=1
    APP_USERNAME=your-company-login-name
    APP_PASSWORD=a-long-unique-password
@@ -53,6 +56,14 @@ The Railway service runs the collector, database, source registry, dashboard, an
    WHATSAPP_TEMPLATE_NAME=tender_alert
    WHATSAPP_TEMPLATE_LANGUAGE=en_US
    ```
+
+   With a large source list, raise `COLLECTOR_WORKERS` well above the default — it's I/O-bound
+   (each worker waits on a different government site's socket), not CPU-bound, so a low worker
+   count is the main reason a full collection sweep runs far longer than
+   `AUTO_COLLECT_INTERVAL_MINUTES`. Sources that fail `SOURCE_FAILURE_SKIP_THRESHOLD` times in a
+   row are skipped on later scheduled sweeps until `SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES` has
+   passed, so chronically dead sites stop slowing down every cycle. The dashboard's "Sources
+   failing" tile and each source's fetch-failure badge surface this without needing log access.
 
 4. Open the Railway service's public domain. The browser requests the configured company username and password before it can read or change monitoring data.
 
