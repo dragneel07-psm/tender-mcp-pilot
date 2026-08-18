@@ -32,9 +32,9 @@ To use it as an MCP server, configure your MCP client to launch `python3 /absolu
 
 Copy `.env.example` to `.env`, then set `WHATSAPP_API_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_RECIPIENT`, and `WHATSAPP_TEMPLATE_NAME`. Each newly collected tender will then send a WhatsApp template alert automatically. The approved template must have three body variables: local government, notice title, and notice link. Production WhatsApp alerts require recipient opt-in.
 
-## Cloud deployment: Railway backend and Vercel dashboard
+## Cloud deployment: Railway
 
-The Railway service runs the collector, database, source registry, and WhatsApp delivery. Vercel serves the dashboard and securely proxies its API requests to Railway.
+The Railway service runs the collector, database, source registry, dashboard, and WhatsApp delivery — there is no separate frontend host.
 
 1. Push this folder to a **private** GitHub repository. Never commit `.env`.
 2. In Railway, deploy the repository, add a Volume mounted at `/app/data`, and set the start command to `python3 app.py serve`. `railway.toml` contains the same deployment settings.
@@ -54,8 +54,7 @@ The Railway service runs the collector, database, source registry, and WhatsApp 
    WHATSAPP_TEMPLATE_LANGUAGE=en_US
    ```
 
-4. Deploy the same repository in Vercel. Set `RAILWAY_API_URL` to your Railway public service URL, for example `https://your-service.up.railway.app`. `vercel.json` routes dashboard API requests through Vercel to Railway.
-5. Open the Vercel URL. The browser requests the configured company username and password before it can read or change monitoring data.
+4. Open the Railway service's public domain. The browser requests the configured company username and password before it can read or change monitoring data.
 
 The first Railway start copies the repository's source registry to its Volume and creates a new local database. It then starts collecting notices automatically. The Railway `/health` endpoint is intentionally unauthenticated for the provider's health check; all dashboard and API data require the company credentials.
 
