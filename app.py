@@ -62,6 +62,12 @@ class OfficialDirectoryParser(HTMLParser):
             if self._cells: self.rows.append((self._cells, self._links))
             self._in_row=False
 
+# SQLite allows only one writer at a time; under WAL, concurrent writers past that point block on
+# the busy handler and can still hit "database is locked" once enough threads are writing at once
+# (this happened in production once COLLECTOR_WORKERS was raised). Funnel every write through this
+# lock instead of relying solely on busy_timeout, so writers queue in-process rather than erroring.
+DB_WRITE_LOCK = threading.Lock()
+
 def conn():
     db = sqlite3.connect(DB, timeout=20)
     db.row_factory = sqlite3.Row
@@ -279,41 +285,61 @@ def send_whatsapp_alert(notice):
         return "error", str(exc)
 
 def collect_one(source):
+    """Fetch and parse a single source, then commit results. Never raises: a single source's
+    failure (network, parsing, or database) must not be able to take down the whole scheduler."""
     now=datetime.now(timezone.utc).isoformat()
-    db=conn()
     try:
         body=fetch(source["notice_url"])
         parser=LinkTextParser(); parser.feed(body)
-        added=0; new_notices=[]
+        candidates=[]
         for href, label in parser.links:
             title=clean(label)
             url=urllib.parse.urljoin(source["notice_url"], href)
             if len(title) < 8 or not relevant(title + " " + url, source): continue
             published=published_date(body, href, title)
             if not published and os.getenv("NOTICE_PAGE_DATE_LOOKUPS", "1") == "1":
-                published=linked_notice_date(url)
+                published=linked_notice_date(url)  # network call; deliberately outside the write lock below
             digest=hashlib.sha256((source["id"]+url+title).encode()).hexdigest()
-            db.execute("""insert or ignore into notices
-                (id,source_id,authority,title,url,discovered_at,published_at,relevant,raw_text)
-                values (?,?,?,?,?,?,?,?,?)""", (digest,source["id"],source["name"],title,url,now,published,1,title))
-            inserted = db.execute("select changes()").fetchone()[0]
-            if not inserted and published:
-                db.execute("update notices set published_at=coalesce(published_at,?) where id=?", (published,digest))
-            added += inserted
-            if inserted: new_notices.append({"id":digest, "authority":source["name"], "title":title, "url":url})
+            candidates.append({"id":digest, "authority":source["name"], "title":title, "url":url, "published":published})
+        # All the (fast, no-network) database writes for this source happen in one locked section,
+        # so 40+ concurrent collector threads serialize on writes without racing SQLite's own locking.
+        added=0; new_notices=[]
+        with DB_WRITE_LOCK:
+            db=conn()
+            try:
+                for c in candidates:
+                    db.execute("""insert or ignore into notices
+                        (id,source_id,authority,title,url,discovered_at,published_at,relevant,raw_text)
+                        values (?,?,?,?,?,?,?,?,?)""", (c["id"],source["id"],source["name"],c["title"],c["url"],now,c["published"],1,c["title"]))
+                    inserted = db.execute("select changes()").fetchone()[0]
+                    if not inserted and c["published"]:
+                        db.execute("update notices set published_at=coalesce(published_at,?) where id=?", (c["published"],c["id"]))
+                    added += inserted
+                    if inserted: new_notices.append(c)
+                db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"ok",f"{added} new notices"))
+                record_health(db, source["id"], True, f"{added} new notices", now)
+                db.commit()
+            finally: db.close()
         for notice in new_notices:
-            status, detail = send_whatsapp_alert(notice)
-            db.execute("insert into deliveries values (?,?,?,?)", (notice["id"], now, status, detail))
-        db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"ok",f"{added} new notices"))
-        record_health(db, source["id"], True, f"{added} new notices", now)
-        db.commit()
+            status, detail = send_whatsapp_alert(notice)  # network call; deliberately outside the write lock
+            with DB_WRITE_LOCK:
+                db=conn()
+                try:
+                    db.execute("insert into deliveries values (?,?,?,?)", (notice["id"], now, status, detail)); db.commit()
+                finally: db.close()
         return {"source":source["name"],"status":"ok","new":added}
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"error",str(exc)))
-        record_health(db, source["id"], False, str(exc), now)
-        db.commit()
+    except Exception as exc:
+        try:
+            with DB_WRITE_LOCK:
+                db=conn()
+                try:
+                    db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"error",str(exc)))
+                    record_health(db, source["id"], False, str(exc), now)
+                    db.commit()
+                finally: db.close()
+        except Exception:
+            pass  # even health/run bookkeeping must not be able to crash the scheduler
         return {"source":source["name"],"status":"error","detail":str(exc)}
-    finally: db.close()
 
 def collect_all(source_id=None):
     selected = [s for s in sources() if not source_id or s["id"] == source_id]
@@ -437,13 +463,17 @@ class Api(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
         notice_match=re.fullmatch(r"/notices/([a-f0-9]{64})/mark-seen", self.path)
         if notice_match:
-            db=conn(); now=datetime.now(timezone.utc).isoformat()
-            db.execute("update notices set seen_at=? where id=? and seen_at is null", (now,notice_match.group(1))); count=db.execute("select changes()").fetchone()[0]; db.commit(); db.close()
+            now=datetime.now(timezone.utc).isoformat()
+            with DB_WRITE_LOCK:
+                db=conn()
+                db.execute("update notices set seen_at=? where id=? and seen_at is null", (now,notice_match.group(1))); count=db.execute("select changes()").fetchone()[0]; db.commit(); db.close()
             return self.respond({"marked_seen":count})
         match=re.fullmatch(r"/sources/([a-z0-9-]+)/mark-seen", self.path)
         if not match: return self.respond({"error":"not found"},404)
-        db=conn(); now=datetime.now(timezone.utc).isoformat()
-        db.execute("update notices set seen_at=? where source_id=? and seen_at is null", (now,match.group(1))); count=db.execute("select changes()").fetchone()[0]; db.commit(); db.close()
+        now=datetime.now(timezone.utc).isoformat()
+        with DB_WRITE_LOCK:
+            db=conn()
+            db.execute("update notices set seen_at=? where source_id=? and seen_at is null", (now,match.group(1))); count=db.execute("select changes()").fetchone()[0]; db.commit(); db.close()
         self.respond({"marked_seen":count})
     def do_PATCH(self):
         if not self.require_auth(): return
@@ -483,16 +513,23 @@ class Api(BaseHTTPRequestHandler):
 def serve():
     interval_minutes = int(os.getenv("AUTO_COLLECT_INTERVAL_MINUTES", "60"))
     def scheduled_collection():
+        # This loop must never die: it's the only thing driving continuous collection. collect_one
+        # already isolates per-source failures, but this try/except is a last-resort safety net so
+        # nothing (collect_all's own bookkeeping, an unforeseen bug) can silently kill the thread and
+        # leave the app looking healthy (server still answers /health) while collection has stopped.
         while True:
-            started=time.monotonic()
-            print("Automatic collection started", flush=True)
-            results=collect_all()
-            counts={}
-            for result in results:
-                counts[result["status"]]=counts.get(result["status"],0)+1
-                if result["status"]=="error": print(json.dumps(result, ensure_ascii=False), flush=True)
-            elapsed=round(time.monotonic()-started,1)
-            print(f"Automatic collection finished in {elapsed}s: {json.dumps(counts, ensure_ascii=False)}", flush=True)
+            try:
+                started=time.monotonic()
+                print("Automatic collection started", flush=True)
+                results=collect_all()
+                counts={}
+                for result in results:
+                    counts[result["status"]]=counts.get(result["status"],0)+1
+                    if result["status"]=="error": print(json.dumps(result, ensure_ascii=False), flush=True)
+                elapsed=round(time.monotonic()-started,1)
+                print(f"Automatic collection finished in {elapsed}s: {json.dumps(counts, ensure_ascii=False)}", flush=True)
+            except Exception as exc:
+                print(f"Automatic collection cycle crashed, will retry next cycle: {exc}", flush=True)
             time.sleep(max(interval_minutes, 5) * 60)
     threading.Thread(target=scheduled_collection, daemon=True).start()
     host=os.getenv("HOST", "127.0.0.1"); port=int(os.getenv("PORT","8787"))

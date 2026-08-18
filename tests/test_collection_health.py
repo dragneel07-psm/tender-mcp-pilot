@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -58,6 +59,24 @@ class CollectionHealthTests(unittest.TestCase):
                 results = app.collect_all()
                 fetch_mock.assert_not_called()
         self.assertEqual(results[0]["status"], "skipped")
+
+    def test_high_concurrency_does_not_crash_or_lock(self):
+        """Regression test: raising COLLECTOR_WORKERS once caused concurrent sqlite writers to hit
+        'database is locked', which escaped collect_one and killed the whole scheduler thread. Every
+        source must finish with a clean 'ok' result under heavy concurrency, no exceptions surfaced."""
+        sample_html = '<a href="/notices/1">Tender notice for road construction bolpatra</a>'
+        sources_list = [{"id": f"src-{i}", "name": f"Source {i}", "url": "https://example.gov.np",
+                          "notice_url": "https://example.gov.np/notices", "keywords": []} for i in range(60)]
+        with mock.patch.object(app, "fetch", return_value=sample_html):
+            with ThreadPoolExecutor(max_workers=40) as pool:
+                results = list(pool.map(app.collect_one, sources_list))
+        self.assertEqual(len(results), 60)
+        for result in results:
+            self.assertEqual(result["status"], "ok")
+        db = app.conn()
+        total = db.execute("select count(*) from notices").fetchone()[0]
+        db.close()
+        self.assertEqual(total, 60)  # each source's notice has a distinct digest (source id is part of it)
 
     def test_manual_single_source_collect_ignores_skip(self):
         src = self.source()
