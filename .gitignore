@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+
+# Local runtime artifacts
+*.db
+*.sqlite3
+.venv/
+venv/
