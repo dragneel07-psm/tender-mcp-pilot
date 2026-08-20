@@ -22,10 +22,12 @@ class ApiTestBase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
-        self._orig_db, self._orig_sources, self._orig_watchlists = storage.DB, storage.SOURCES, storage.WATCHLISTS
+        self._orig_db, self._orig_sources, self._orig_watchlists, self._orig_company_profiles = \
+            storage.DB, storage.SOURCES, storage.WATCHLISTS, storage.COMPANY_PROFILES
         storage.DB = Path(self.tmpdir.name) / "test.db"
         storage.SOURCES = Path(self.tmpdir.name) / "sources.json"; storage.SOURCES.write_text("[]")
         storage.WATCHLISTS = Path(self.tmpdir.name) / "watchlists.json"; storage.WATCHLISTS.write_text("[]")
+        storage.COMPANY_PROFILES = Path(self.tmpdir.name) / "company_profiles.json"; storage.COMPANY_PROFILES.write_text("[]")
         # config.load_dotenv() already loaded this repo's real .env (including live WhatsApp
         # credentials) into os.environ by the time this process started -- clear everything each
         # test might be sensitive to so tests reflect a clean environment, not this machine's.
@@ -43,7 +45,8 @@ class ApiTestBase(unittest.TestCase):
 
     def _shutdown(self):
         self.server.shutdown(); self.server.server_close()
-        storage.DB, storage.SOURCES, storage.WATCHLISTS = self._orig_db, self._orig_sources, self._orig_watchlists
+        storage.DB, storage.SOURCES, storage.WATCHLISTS, storage.COMPANY_PROFILES = \
+            self._orig_db, self._orig_sources, self._orig_watchlists, self._orig_company_profiles
         for k, v in self._orig_env.items():
             if v is None: os.environ.pop(k, None)
             else: os.environ[k] = v
@@ -207,6 +210,69 @@ class WatchlistsAndCollectionStatusTests(ApiTestBase):
         status, payload = self.request("GET", "/alerts/status")
         self.assertEqual(status, 200)
         self.assertFalse(payload["configured"])
+
+
+class CompanyProfilesAndMatchingTests(ApiTestBase):
+    def _seed_categorized_notice(self, notice_id="a"*64, category="Road", province="Sudurpashchim", status="active"):
+        db = storage.conn()
+        db.execute("""insert into notices (id,source_id,authority,title,url,discovered_at,relevant,raw_text,province,status)
+                   values (?,?,?,?,?,?,?,?,?,?)""",
+                   (notice_id, "src-1", "Some Municipality", "Construction of rural road", "https://x/1",
+                    "2026-01-01T00:00:00+00:00", 1, "Construction of rural road", province, status))
+        db.execute("insert into notice_categories values (?,?,?)", (notice_id, category, 0.6))
+        db.commit(); db.close()
+
+    def test_create_requires_at_least_one_criterion(self):
+        status, payload = self.request("POST", "/company-profiles", {"name": "Acme Corp"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", payload)
+
+    def test_create_update_delete_company_profile(self):
+        status, created = self.request("POST", "/company-profiles", {"name": "Acme Corp", "categories": ["Road"]})
+        self.assertEqual(status, 201)
+        self.assertTrue(created["id"].startswith("cp-"))
+        status, listed = self.request("GET", "/company-profiles")
+        self.assertEqual(len(listed), 1)
+        status, updated = self.request("PATCH", f"/company-profiles/{created['id']}", {"name": "Acme Corp", "categories": ["Solar"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["categories"], ["Solar"])
+        status, _ = self.request("DELETE", f"/company-profiles/{created['id']}")
+        self.assertEqual(status, 200)
+        status, listed = self.request("GET", "/company-profiles")
+        self.assertEqual(listed, [])
+
+    def test_duplicate_company_profile_name_is_rejected(self):
+        self.request("POST", "/company-profiles", {"name": "Acme Corp", "categories": ["Road"]})
+        status, payload = self.request("POST", "/company-profiles", {"name": "Acme Corp", "categories": ["Road"]})
+        self.assertEqual(status, 409)
+
+    def test_matches_for_unknown_profile_is_404(self):
+        status, payload = self.request("GET", "/company-profiles/cp-000000000000/matches")
+        self.assertEqual(status, 404)
+
+    def test_matches_ranks_and_explains(self):
+        self._seed_categorized_notice()
+        _, profile = self.request("POST", "/company-profiles", {"name": "Acme Corp", "categories": ["Road"], "provinces": ["Sudurpashchim"]})
+        status, matches = self.request("GET", f"/company-profiles/{profile['id']}/matches")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(matches), 1)
+        self.assertGreater(matches[0]["match_score"], 0)
+        dimension_names = {d["dimension"] for d in matches[0]["match_dimensions"]}
+        self.assertEqual(dimension_names, {"category", "province"})
+
+    def test_matches_excludes_non_actionable_notices(self):
+        self._seed_categorized_notice(status="cancelled")
+        _, profile = self.request("POST", "/company-profiles", {"name": "Acme Corp", "categories": ["Road"]})
+        status, matches = self.request("GET", f"/company-profiles/{profile['id']}/matches")
+        self.assertEqual(status, 200)
+        self.assertEqual(matches, [])
+
+    def test_matches_respects_min_score(self):
+        self._seed_categorized_notice(category="Solar")  # won't match "Road"
+        _, profile = self.request("POST", "/company-profiles", {"name": "Acme Corp", "categories": ["Road"]})
+        status, matches = self.request("GET", f"/company-profiles/{profile['id']}/matches?min_score=0.1")
+        self.assertEqual(status, 200)
+        self.assertEqual(matches, [])
 
 
 if __name__ == "__main__":

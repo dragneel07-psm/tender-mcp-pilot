@@ -32,6 +32,15 @@ The dashboard starts at `http://127.0.0.1:8787`. The JSON API remains available 
 
 To use it as an MCP server, configure your MCP client to launch `python3 /absolute/path/to/app.py mcp`. It provides `search_tenders`, `latest_tenders`, and `tender_details`.
 
+## Company profiles & matching
+
+`POST /company-profiles` saves a company's matching preferences (`categories`, `provinces`,
+`keywords` -- at least one required). `GET /company-profiles/{id}/matches` scores every open
+notice against that profile and returns them ranked, each with a `match_score` (0-1) and
+`match_dimensions` explaining exactly which categories/province/keywords drove the score.
+Cancelled/awarded notices are excluded, and a dimension the profile didn't configure is left out
+of the score entirely rather than guessed at.
+
 ## Alerts
 
 Copy `.env.example` to `.env`, then set `WHATSAPP_API_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_RECIPIENT`, and `WHATSAPP_TEMPLATE_NAME`. Each newly collected tender will then send a WhatsApp template alert automatically. The approved template must have three body variables: local government, notice title, and notice link. Production WhatsApp alerts require recipient opt-in.

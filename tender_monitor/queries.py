@@ -2,7 +2,7 @@
 import os
 from datetime import datetime, timezone
 
-from . import health, storage
+from . import health, matching, storage
 
 
 def list_notices(query="", limit=50, source_id="", offset=0, province="", notice_type="", status="",
@@ -72,6 +72,42 @@ def details(notice_id):
     result["categories"]=[dict(r) for r in db.execute(
         "select category, confidence_score from notice_categories where notice_id=? order by category", (notice_id,))]
     db.close(); return result
+
+
+def matches_for_company(profile_id, limit=20, offset=0, min_score=0.0):
+    """Rank every actionable notice (excludes cancelled/awarded -- matching.NON_ACTIONABLE_STATUSES)
+    against one company profile via matching.match_tender_to_company(), highest score first. Returns
+    None if the profile doesn't exist, so callers can distinguish "no profile" (404) from "profile
+    exists, nothing scored above min_score" (empty list).
+
+    Scores the full actionable-notice set in Python rather than pushing scoring into SQL -- at this
+    pilot's current scale (~7,000 notices) a full scan per request is cheap, and it keeps the
+    scoring logic in one place, unit-testable independent of SQL. Revisit if volume ever reaches
+    Milestone 11's PostgreSQL trigger conditions."""
+    profile = next((item for item in storage.company_profiles() if item["id"] == profile_id), None)
+    if profile is None: return None
+    limit=max(1, min(int(limit), 100)); offset=max(0, int(offset)); min_score=max(0.0, min(float(min_score), 1.0))
+    db=storage.conn()
+    placeholders=",".join("?" * len(matching.NON_ACTIONABLE_STATUSES))
+    rows=[dict(r) for r in db.execute(
+        f"select * from notices where status is null or status not in ({placeholders}) order by discovered_at desc",
+        matching.NON_ACTIONABLE_STATUSES)]
+    categories_by_notice={}
+    if rows:
+        qmarks=",".join("?" * len(rows))
+        for r in db.execute(
+                f"select notice_id, category, confidence_score from notice_categories where notice_id in ({qmarks})",
+                [row["id"] for row in rows]):
+            categories_by_notice.setdefault(r["notice_id"], []).append({"category": r["category"], "confidence_score": r["confidence_score"]})
+    db.close()
+    scored=[]
+    for row in rows:
+        row["categories"]=categories_by_notice.get(row["id"], [])
+        result=matching.match_tender_to_company(row, profile)
+        if result["score"] >= min_score:
+            scored.append({**row, "match_score": result["score"], "match_dimensions": result["dimensions"]})
+    scored.sort(key=lambda row: row["match_score"], reverse=True)
+    return scored[offset:offset + limit]
 
 
 def notice_documents(notice_id):

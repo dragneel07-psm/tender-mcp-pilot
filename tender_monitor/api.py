@@ -48,6 +48,12 @@ class Api(BaseHTTPRequestHandler):
         if path == "/watchlists": return self.respond(storage.watchlists())
         if path == "/alerts/status": return self.respond(queries.alert_summary())
         if path == "/collection/status": return self.respond(status.last_cycle)
+        if path == "/company-profiles": return self.respond(storage.company_profiles())
+        matches_match=re.fullmatch(r"/company-profiles/(cp-[a-f0-9]+)/matches", path)
+        if matches_match:
+            result=queries.matches_for_company(
+                matches_match.group(1), params.get("limit",[20])[0], params.get("offset",[0])[0], params.get("min_score",[0])[0])
+            return self.respond(result if result is not None else {"error":"not found"}, 200 if result is not None else 404)
         if path == "/notices":
             has_documents=params.get("has_documents",[""])[0]
             return self.respond(queries.list_notices(
@@ -73,6 +79,15 @@ class Api(BaseHTTPRequestHandler):
                     items=storage.watchlists(); item=storage.validate_watchlist(payload)
                     if any(existing["id"] == item["id"] for existing in items): return self.respond({"error":"A watchlist with this name already exists."},409)
                     items.append(item); storage.save_watchlists(items)
+                return self.respond(item,201)
+            except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
+        if self.path == "/company-profiles":
+            try:
+                payload=self.json_body()
+                with storage.REGISTRY_WRITE_LOCK:
+                    items=storage.company_profiles(); item=storage.validate_company_profile(payload)
+                    if any(existing["id"] == item["id"] for existing in items): return self.respond({"error":"A company profile with this name already exists."},409)
+                    items.append(item); storage.save_company_profiles(items)
                 return self.respond(item,201)
             except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
         if self.path == "/sources":
@@ -111,6 +126,16 @@ class Api(BaseHTTPRequestHandler):
                     items[index]=storage.validate_watchlist(payload,items[index]); storage.save_watchlists(items)
                 return self.respond(items[index])
             except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
+        company_profile_match=re.fullmatch(r"/company-profiles/(cp-[a-f0-9]+)", self.path)
+        if company_profile_match:
+            try:
+                payload=self.json_body()
+                with storage.REGISTRY_WRITE_LOCK:
+                    items=storage.company_profiles(); index=next((i for i, item in enumerate(items) if item["id"]==company_profile_match.group(1)), None)
+                    if index is None: return self.respond({"error":"not found"},404)
+                    items[index]=storage.validate_company_profile(payload,items[index]); storage.save_company_profiles(items)
+                return self.respond(items[index])
+            except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
         match=re.fullmatch(r"/sources/([a-z0-9-]+)", self.path)
         if not match: return self.respond({"error":"not found"},404)
         try:
@@ -130,6 +155,13 @@ class Api(BaseHTTPRequestHandler):
                 if len(remaining)==len(items): return self.respond({"error":"not found"},404)
                 storage.save_watchlists(remaining)
             return self.respond({"removed":watchlist_match.group(1)})
+        company_profile_match=re.fullmatch(r"/company-profiles/(cp-[a-f0-9]+)", self.path)
+        if company_profile_match:
+            with storage.REGISTRY_WRITE_LOCK:
+                items=storage.company_profiles(); remaining=[item for item in items if item["id"]!=company_profile_match.group(1)]
+                if len(remaining)==len(items): return self.respond({"error":"not found"},404)
+                storage.save_company_profiles(remaining)
+            return self.respond({"removed":company_profile_match.group(1)})
         match=re.fullmatch(r"/sources/([a-z0-9-]+)", self.path)
         if not match: return self.respond({"error":"not found"},404)
         with storage.REGISTRY_WRITE_LOCK:

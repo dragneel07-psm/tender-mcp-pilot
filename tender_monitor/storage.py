@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import urllib.parse
 
-from .config import DB, SOURCES, WATCHLISTS
+from .config import COMPANY_PROFILES, DB, SOURCES, WATCHLISTS
 from .parsing import classify_categories, classify_notice_type, clean, status_for_notice_type
 
 # SQLite allows only one writer at a time; under WAL, concurrent writers past that point block on
@@ -22,12 +22,14 @@ DB_WRITE_LOCK = threading.Lock()
 # same lock. Guards the one-time (per fresh database) schema migration below.
 SCHEMA_MIGRATION_LOCK = threading.Lock()
 
-# Every read-modify-write cycle against sources.json/watchlists.json (add/edit/delete a source or
-# watchlist, or the bootstrap-* import) must hold this for its whole read...mutate...save span, not
-# just the save -- save_json()'s temp-file-then-rename is atomic per write, but two concurrent
-# mutations can still race on the read they both start from and the second one's write clobbers the
-# first's change. The two files are covered by one lock because deleting a source also mutates
-# watchlists (removing it from every watchlist's source_ids) in the same logical operation.
+# Every read-modify-write cycle against sources.json/watchlists.json/company_profiles.json (add/
+# edit/delete a source, watchlist, or company profile, or the bootstrap-* import) must hold this
+# for its whole read...mutate...save span, not just the save -- save_json()'s temp-file-then-rename
+# is atomic per write, but two concurrent mutations can still race on the read they both start from
+# and the second one's write clobbers the first's change. All three files share one lock because
+# deleting a source also mutates watchlists (removing it from every watchlist's source_ids) in the
+# same logical operation; company_profiles.json doesn't cross-reference the others today but there
+# is no benefit to a fourth lock for one more small JSON file.
 REGISTRY_WRITE_LOCK = threading.Lock()
 
 # Additive Milestone 2 columns. organization/province/notice_type/status/first_seen/last_seen are
@@ -180,6 +182,35 @@ def watchlists():
     try: return json.loads(WATCHLISTS.read_text())
     except json.JSONDecodeError: return []
 def save_watchlists(items): save_json(WATCHLISTS, items)
+
+
+def company_profiles():
+    if not COMPANY_PROFILES.exists(): return []
+    try: return json.loads(COMPANY_PROFILES.read_text())
+    except json.JSONDecodeError: return []
+def save_company_profiles(items): save_json(COMPANY_PROFILES, items)
+
+
+def _string_list(value):
+    if isinstance(value, str): value = [item.strip() for item in value.split(",") if item.strip()]
+    if not isinstance(value, list): raise ValueError("Categories, provinces, and keywords must each be a list.")
+    return [clean(str(item)) for item in value if clean(str(item))]
+
+
+def validate_company_profile(payload, current=None):
+    """Milestone 5: a company's matching preferences, in the same shape/validation style as
+    validate_watchlist/validate_source above. Deliberately no min/max budget field yet --
+    estimated_amount stays null until Milestone 10 (see documents.py), and a matching dimension
+    over a field that's always null would be dead code, not a real preference."""
+    name=clean(str(payload.get("name", current.get("name", "") if current else "")))
+    categories=_string_list(payload.get("categories", current.get("categories", []) if current else []))
+    provinces=_string_list(payload.get("provinces", current.get("provinces", []) if current else []))
+    keywords=_string_list(payload.get("keywords", current.get("keywords", []) if current else []))
+    if not name: raise ValueError("A company name is required.")
+    if not categories and not provinces and not keywords:
+        raise ValueError("At least one of categories, provinces, or keywords is required to match against.")
+    return {"id": current["id"] if current else "cp-"+hashlib.sha1(name.encode()).hexdigest()[:12],
+            "name": name, "categories": categories, "provinces": provinces, "keywords": keywords}
 
 
 def validate_watchlist(payload, current=None):

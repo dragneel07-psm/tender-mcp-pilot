@@ -1,5 +1,38 @@
 # Changelog
 
+## Milestone 5 — Company profiles + matching
+
+- New `tender_monitor/matching.py`: `match_tender_to_company(notice, profile)`, pure business logic
+  (no I/O) scoring one notice against one company profile across three explainable dimensions --
+  category (weight 0.5, scored at the Milestone 4 classifier's own confidence for the best-matching
+  category), province (weight 0.2, exact match against the source-stamped province), and keyword
+  (weight 0.3, substring match against title/authority). A dimension the profile leaves unset (no
+  categories/provinces/keywords configured) is *omitted* from the result, not scored 0 or 1 --
+  fabricating a preference the company never stated would be worse than not scoring it, the same
+  "never fabricate" rule Milestones 2/3 followed for fields with no honest data source. The overall
+  score is the weighted average over only the active dimensions (weights renormalized), so a
+  profile with just one dimension configured still produces a meaningful 0..1 score. Deliberately
+  no budget/amount dimension yet: `estimated_amount` stays null until Milestone 10, and a dimension
+  over an always-null field would be dead code, not a real preference.
+- New `company_profiles.json` registry (name, categories, provinces, keywords), same JSON-file/
+  `REGISTRY_WRITE_LOCK`/atomic-temp-file-write pattern `storage.py` already uses for
+  `sources.json`/`watchlists.json` -- a saved company preference is the same shape of thing as a
+  saved watchlist, so it gets the same storage treatment rather than a new database table.
+- New `queries.matches_for_company()`: ranks every *actionable* notice (excludes `cancelled`/
+  `awarded` -- `matching.NON_ACTIONABLE_STATUSES` -- as a hard filter, not a low score, since a
+  "70% match" on an already-awarded tender would mislead) against a profile, highest score first.
+  Scores the full notice set in Python rather than in SQL, deliberately: at this pilot's current
+  scale (~7,000 notices) a full scan per request measured well under 10ms against the live
+  database, and keeping scoring in one Python function keeps it unit-testable independent of SQL.
+  Revisit only if volume reaches Milestone 11's PostgreSQL trigger conditions.
+- New endpoints, mirroring the existing watchlist CRUD shape: `GET/POST /company-profiles`,
+  `PATCH/DELETE /company-profiles/{id}`, and `GET /company-profiles/{id}/matches` (accepts
+  `limit`/`offset`/`min_score`; 404s for an unknown profile id, distinct from an empty match list).
+- Test suite: 117 → 138. New `tests/test_matching.py` (pure per-dimension logic, no DB) plus a new
+  `CompanyProfilesAndMatchingTests` class in `tests/test_api.py` (CRUD, duplicate-name rejection,
+  404 on unknown profile, non-actionable-status exclusion, `min_score` filtering).
+- No MCP tool changes -- expanding the tool surface is explicitly Milestone 8's scope.
+
 ## Milestone 4 — Classification + advanced search
 
 - Rule-based, title-only multi-category classification (`parsing.classify_categories`), same style
