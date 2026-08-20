@@ -60,6 +60,9 @@ def collect_one(source):
                             db.execute("update notices set published_at=coalesce(published_at,?) where id=?", (c["published"],c["id"]))
                         if c["content_hash"]:
                             db.execute("update notices set content_hash=coalesce(content_hash,?) where id=?", (c["content_hash"],c["id"]))
+                    else:
+                        for category, confidence in c["categories"]:
+                            db.execute("insert or ignore into notice_categories values (?,?,?)", (c["id"],category,confidence))
                     added += inserted
                     if inserted: new_notices.append(c)
                 db.execute("insert into runs values (?,?,?,?)", (source["id"],now,"ok",f"{added} new notices"))

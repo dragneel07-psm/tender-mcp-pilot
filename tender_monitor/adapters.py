@@ -57,6 +57,7 @@ class GenericHtmlLinkAdapter(BaseTenderSource):
                 "province": source.get("province"), "title": title, "url": url,
                 "published": published, "notice_type": notice_type,
                 "status": parsing.status_for_notice_type(notice_type),
+                "categories": parsing.classify_categories(title),
                 "content_hash": hashlib.sha256(snippet.encode()).hexdigest() if snippet else None,
                 # 0.9 = found directly on the listing page; downgraded to 0.5 if no date is ever
                 # found; _resolve_missing_dates below upgrades to 0.7 for a per-notice-page find.

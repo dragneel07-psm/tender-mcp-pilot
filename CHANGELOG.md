@@ -1,5 +1,27 @@
 # Changelog
 
+## Milestone 4 — Classification + advanced search
+
+- Rule-based, title-only multi-category classification (`parsing.classify_categories`), same style
+  as Milestone 2's `classify_notice_type`: a notice can match several categories (e.g. "CCTV and
+  networking equipment"), each with a flat 0.6 confidence ("a keyword matched", nothing more
+  precise is honestly knowable from title text alone); unmatched titles get `("Other", 0.5)` so
+  every notice has at least one category. New `notice_categories` table (notice_id, category,
+  confidence_score) rather than a column, since a notice can carry more than one.
+- Added real indexes on `notices.source_id`/`notices.discovered_at` and
+  `notice_categories.category` (audit §12 flagged these as unindexed).
+- `queries.list_notices`/`GET /notices` upgraded with filters (`province`, `notice_type`,
+  `status`, `category`, `has_documents`) and `offset`-based pagination. Deliberately no
+  `published_after`/`published_before`: `published_at` is free-text extracted from source pages in
+  varying formats (not a normalized comparable value), so a `>=`/`<=` string comparison on it
+  would silently misorder results. Added `discovered_after`/`discovered_before` instead, filtering
+  on the real ISO timestamp this process itself sets.
+- `GET /notices/{id}` now includes the notice's `categories`.
+- Existing rows backfilled via the same one-time-per-process pattern as Milestone 2, guarded so the
+  `count(*)` check that decides whether backfill is needed runs at most once per process lifetime,
+  not on every `conn()` call (conn() is called extremely often).
+- Test suite: 113 → 117.
+
 ## Milestone 3 — Document intelligence
 
 - First new dependency of the project: `pypdf==6.16.1` (pure Python, no system libraries --

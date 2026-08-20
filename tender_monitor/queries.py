@@ -5,15 +5,39 @@ from datetime import datetime, timezone
 from . import health, storage
 
 
-def list_notices(query="", limit=50, source_id=""):
-    limit=max(1, min(int(limit), 100))
-    db=storage.conn(); sql="select * from notices"; args=[]; conditions=[]
+def list_notices(query="", limit=50, source_id="", offset=0, province="", notice_type="", status="",
+                  category="", discovered_after="", discovered_before="", has_documents=None):
+    """Filtered, paginated notice search (Milestone 4). Deliberately no published_after/
+    published_before: published_at is free-text extracted from source pages (formats vary --
+    "04/07/2023", "2026-01-01", BS dates, ...), not a normalized comparable value, so a >=/<=
+    string comparison on it would silently misorder results. discovered_after/discovered_before
+    filter on discovered_at instead, which is a real ISO timestamp this process itself sets."""
+    limit=max(1, min(int(limit), 100)); offset=max(0, int(offset))
+    db=storage.conn(); args=[]; conditions=[]
+    sql="select distinct n.* from notices n"
+    if category:
+        sql += " join notice_categories nc on nc.notice_id = n.id"
+        conditions.append("nc.category = ?"); args.append(category)
     if query:
-        conditions.append("(lower(title) like ? or lower(authority) like ?)"); args.extend([f"%{query.lower()}%"]*2)
+        conditions.append("(lower(n.title) like ? or lower(n.authority) like ?)"); args.extend([f"%{query.lower()}%"]*2)
     if source_id:
-        conditions.append("source_id = ?"); args.append(source_id)
+        conditions.append("n.source_id = ?"); args.append(source_id)
+    if province:
+        conditions.append("n.province = ?"); args.append(province)
+    if notice_type:
+        conditions.append("n.notice_type = ?"); args.append(notice_type)
+    if status:
+        conditions.append("n.status = ?"); args.append(status)
+    if discovered_after:
+        conditions.append("n.discovered_at >= ?"); args.append(discovered_after)
+    if discovered_before:
+        conditions.append("n.discovered_at <= ?"); args.append(discovered_before)
+    if has_documents is not None:
+        exists_clause="exists (select 1 from documents d where d.notice_id = n.id)"
+        conditions.append(exists_clause if has_documents else f"not {exists_clause}")
     if conditions: sql += " where " + " and ".join(conditions)
-    rows=[dict(r) for r in db.execute(sql+" order by discovered_at desc limit ?", args+[limit])]; db.close(); return rows
+    sql += " order by n.discovered_at desc limit ? offset ?"
+    rows=[dict(r) for r in db.execute(sql, args+[limit, offset])]; db.close(); return rows
 
 
 def source_summary():
@@ -42,7 +66,12 @@ def alert_summary():
 
 
 def details(notice_id):
-    db=storage.conn(); row=db.execute("select * from notices where id=?",(notice_id,)).fetchone(); db.close(); return dict(row) if row else None
+    db=storage.conn(); row=db.execute("select * from notices where id=?",(notice_id,)).fetchone()
+    if not row: db.close(); return None
+    result=dict(row)
+    result["categories"]=[dict(r) for r in db.execute(
+        "select category, confidence_score from notice_categories where notice_id=? order by category", (notice_id,))]
+    db.close(); return result
 
 
 def notice_documents(notice_id):

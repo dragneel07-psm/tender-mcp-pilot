@@ -109,3 +109,51 @@ def status_for_notice_type(notice_type):
     open/closed status from (that needs document intelligence -- Milestone 3). 'active' is a
     default meaning "still being collected as relevant", not a claim about a real deadline."""
     return NOTICE_STATUS_BY_TYPE.get(notice_type, "active")
+
+
+# Rule-based, title-only category classification (Milestone 4). A notice can match several
+# categories (e.g. "CCTV and networking equipment for..." is both CCTV and Networking) -- every
+# match is kept, not just the first. Confidence is flat and deliberately unambitious: 0.6 means
+# "a keyword matched", nothing more precise than that is honestly knowable from title text alone.
+# Most real notices collected so far are civil-works (roads, buildings, water supply), which is why
+# those categories' keyword lists are the most battle-tested against real data; the IT/tech
+# categories exist per the target taxonomy but will fire rarely until the source registry expands
+# beyond local governments into ministries/departments/PSEs where tech tenders are more common.
+CATEGORY_KEYWORDS = (
+    ("CCTV", ("cctv", "camera", "सिसिटिभी")),
+    ("Networking", ("network", "networking", "wifi", "नेटवर्क")),
+    ("Telecommunication", ("telecom", "telephone", "दूरसञ्चार")),
+    ("Software", ("software", "सफ्टवेयर")),
+    ("Cybersecurity", ("cybersecurity", "firewall")),
+    ("Cloud", ("cloud", "क्लाउड")),
+    ("Server", ("server",)),
+    ("Data Center", ("data center", "data centre")),
+    ("Hardware", ("hardware", "laptop", "computer", "ल्यापटप", "कम्प्युटर")),
+    ("IT", ("आईटी", "सूचना प्रविधि", "information technology")),
+    ("Solar", ("solar", "सोलार", "सौर्य")),
+    ("Electrical", ("electrical", "electricity", "विद्युत")),
+    ("Road", ("road", "सडक", "बाटो")),
+    ("Water Supply", ("water supply", "खानेपानी")),
+    ("Building", ("building", "भवन")),
+    ("Civil Construction", ("construction", "निर्माण")),
+    ("Medical", ("medical", "hospital", "स्वास्थ्य", "अस्पताल")),
+    ("Agriculture", ("agriculture", "कृषि")),
+    ("Education", ("school", "शिक्षा", "विद्यालय")),
+    ("Consulting", ("consulting", "consultancy", "परामर्श")),
+    ("Vehicles", ("vehicle", "सवारी")),
+    ("Furniture", ("furniture", "फर्निचर")),
+    ("Printing", ("printing", "छपाई")),
+    ("Garments", ("garment", "uniform", "पोशाक")),
+    ("Office Supplies", ("stationery", "स्टेशनरी")),
+)
+CATEGORY_MATCH_CONFIDENCE = 0.6
+UNCATEGORIZED_CONFIDENCE = 0.5
+
+
+def classify_categories(title):
+    """List of (category, confidence_score) tuples. Never empty: a title matching nothing gets a
+    single ('Other', 0.5) row, so every notice has at least one category to query on."""
+    lower=title.lower()
+    matches=[category for category, keywords in CATEGORY_KEYWORDS if any(k.lower() in lower for k in keywords)]
+    if not matches: return [("Other", UNCATEGORIZED_CONFIDENCE)]
+    return [(category, CATEGORY_MATCH_CONFIDENCE) for category in matches]

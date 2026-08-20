@@ -176,6 +176,17 @@ class CollectionHealthTests(unittest.TestCase):
         self.assertIsNotNone(notice["content_hash"])
         self.assertIn(notice["confidence_score"], (0.5, 0.7, 0.9))
 
+    def test_new_notice_gets_categorized(self):
+        html = '<a href="/n/1">Road construction bolpatra notice</a>'
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        db = storage.conn()
+        rows = db.execute("select category from notice_categories where notice_id=?", (notice["id"],)).fetchall()
+        db.close()
+        categories = {r["category"] for r in rows}
+        self.assertEqual(categories, {"Road", "Civil Construction"})
+
     def test_province_is_stamped_from_source(self):
         src = self.source(); src["province"] = "Karnali"
         html = '<a href="/n/1">Road construction bolpatra notice</a>'
@@ -243,6 +254,29 @@ class CollectionHealthTests(unittest.TestCase):
             self.assertEqual(docs[0]["document_type"], "tender_notice")
         finally:
             os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
+
+    def test_list_notices_category_filter(self):
+        with mock.patch.object(net, "fetch", return_value='<a href="/n/1">Road construction bolpatra notice</a>'):
+            collector.collect_one(self.source())
+        self.assertEqual(len(queries.list_notices(category="Road")), 1)
+        self.assertEqual(len(queries.list_notices(category="Medical")), 0)
+
+    def test_list_notices_pagination(self):
+        for i in range(3):
+            src = self.source(); src["id"] = f"test-source-{i}"
+            with mock.patch.object(net, "fetch", return_value=f'<a href="/n/{i}">Road construction notice {i} bolpatra</a>'):
+                collector.collect_one(src)
+        page1 = queries.list_notices(limit=2, offset=0)
+        page2 = queries.list_notices(limit=2, offset=2)
+        self.assertEqual(len(page1), 2)
+        self.assertEqual(len(page2), 1)
+        self.assertEqual({n["id"] for n in page1} & {n["id"] for n in page2}, set())
+
+    def test_list_notices_has_documents_filter(self):
+        with mock.patch.object(net, "fetch", return_value='<a href="/n/1">Road construction bolpatra notice</a>'):
+            collector.collect_one(self.source())
+        self.assertEqual(len(queries.list_notices(has_documents=True)), 0)
+        self.assertEqual(len(queries.list_notices(has_documents=False)), 1)
 
     def test_manual_single_source_collect_ignores_skip(self):
         src = self.source()

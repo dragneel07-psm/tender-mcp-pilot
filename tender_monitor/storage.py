@@ -8,7 +8,7 @@ import threading
 import urllib.parse
 
 from .config import DB, SOURCES, WATCHLISTS
-from .parsing import classify_notice_type, clean, status_for_notice_type
+from .parsing import classify_categories, classify_notice_type, clean, status_for_notice_type
 
 # SQLite allows only one writer at a time; under WAL, concurrent writers past that point block on
 # the busy handler and can still hit "database is locked" once enough threads are writing at once
@@ -47,6 +47,11 @@ NOTICES_MIGRATION_COLUMNS = (
 )
 BACKFILLABLE_COLUMNS = ("organization", "province", "notice_type", "status", "first_seen", "last_seen")
 
+# Whether the one-time notice_categories backfill has been checked yet in this process. Checked at
+# most once per process lifetime (not per conn() call) since count(*) over a 6,000+ row table on
+# every single connection would add real, cumulative overhead -- conn() is called extremely often.
+_categories_backfill_checked = False
+
 
 def conn():
     db = sqlite3.connect(DB, timeout=20)
@@ -57,6 +62,13 @@ def conn():
         id text primary key, source_id text not null, authority text not null,
         title text not null, url text not null, discovered_at text not null,
         relevant integer not null default 0, raw_text text not null
+    )""")
+    # Milestone 4: a notice can carry several categories, each with its own confidence -- a
+    # separate table, not a column, since "one or more categories per notice" doesn't fit a single
+    # SQL column without either denormalizing or fabricating a canonical "the" category.
+    db.execute("""create table if not exists notice_categories (
+        notice_id text not null, category text not null, confidence_score real not null,
+        primary key (notice_id, category)
     )""")
     _ensure_notices_schema(db)
     db.execute("create table if not exists runs (source_id text, ran_at text, status text, detail text)")
@@ -74,27 +86,48 @@ def conn():
         size_bytes integer, content_type text, document_type text, extracted_text text,
         extraction_status text not null, discovered_at text not null
     )""")
+    # Milestone 4: notices.source_id/discovered_at were unindexed (audit §12) -- list_notices()'s
+    # filters and sort would otherwise degrade to full scans as the table grows past its current
+    # ~7,000 rows. "if not exists" makes this a cheap no-op check on every call once created.
+    db.execute("create index if not exists idx_notices_source_id on notices(source_id)")
+    db.execute("create index if not exists idx_notices_discovered_at on notices(discovered_at)")
+    db.execute("create index if not exists idx_notice_categories_category on notice_categories(category)")
     return db
 
 
 def _ensure_notices_schema(db):
+    global _categories_backfill_checked
     columns = {row[1] for row in db.execute("pragma table_info(notices)")}
     missing = [name for name, _ in NOTICES_MIGRATION_COLUMNS if name not in columns]
-    if not missing: return
+    if not missing and _categories_backfill_checked: return
     with SCHEMA_MIGRATION_LOCK:
         # Re-check under the lock: with up to dozens of collector threads able to call conn()
         # concurrently right after a fresh deploy, another thread may have already migrated the
         # schema between our unlocked check above and acquiring this lock.
         columns = {row[1] for row in db.execute("pragma table_info(notices)")}
         missing = [name for name, ddl in NOTICES_MIGRATION_COLUMNS if name not in columns]
-        if not missing: return
-        for name, ddl in NOTICES_MIGRATION_COLUMNS:
-            if name in missing:
-                db.execute(f"alter table notices add column {name} {ddl}")
-        backfillable = [name for name in missing if name in BACKFILLABLE_COLUMNS]
-        if backfillable:
-            _backfill_notices_schema(db, backfillable)
+        if missing:
+            for name, ddl in NOTICES_MIGRATION_COLUMNS:
+                if name in missing:
+                    db.execute(f"alter table notices add column {name} {ddl}")
+            backfillable = [name for name in missing if name in BACKFILLABLE_COLUMNS]
+            if backfillable:
+                _backfill_notices_schema(db, backfillable)
+        if not _categories_backfill_checked:
+            if db.execute("select count(*) from notice_categories").fetchone()[0] == 0:
+                if db.execute("select count(*) from notices").fetchone()[0] > 0:
+                    _backfill_notice_categories(db)
+            _categories_backfill_checked = True
         db.commit()
+
+
+def _backfill_notice_categories(db):
+    """One-time classification of every existing notice's title. Only reached from
+    _ensure_notices_schema while holding SCHEMA_MIGRATION_LOCK; guarded by
+    _categories_backfill_checked so it runs once per process, not once per connection."""
+    for row in db.execute("select id, title from notices").fetchall():
+        for category, confidence in classify_categories(row["title"]):
+            db.execute("insert or ignore into notice_categories values (?,?,?)", (row["id"], category, confidence))
 
 
 def _backfill_notices_schema(db, backfillable_columns):
