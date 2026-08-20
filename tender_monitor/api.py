@@ -67,6 +67,11 @@ class Api(BaseHTTPRequestHandler):
             record=queries.details(documents_match.group(1))
             if not record: return self.respond({"error":"not found"},404)
             return self.respond(queries.notice_documents(documents_match.group(1)))
+        changes_match=re.fullmatch(r"/notices/([a-f0-9]{64})/changes", path)
+        if changes_match:
+            record=queries.details(changes_match.group(1))
+            if not record: return self.respond({"error":"not found"},404)
+            return self.respond(queries.notice_changes(changes_match.group(1)))
         if path.startswith("/notices/"):
             record=queries.details(path.rsplit("/",1)[1]); return self.respond(record or {"error":"not found"}, 200 if record else 404)
         self.respond({"error":"not found"},404)

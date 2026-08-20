@@ -77,6 +77,7 @@ def conn():
     db.execute("""create table if not exists deliveries (
         notice_id text, delivered_at text, status text, detail text
     )""")
+    _ensure_deliveries_schema(db)
     db.execute("""create table if not exists source_health (
         source_id text primary key, last_status text, last_detail text,
         last_run_at text, last_success_at text, consecutive_failures integer not null default 0
@@ -94,7 +95,33 @@ def conn():
     db.execute("create index if not exists idx_notices_source_id on notices(source_id)")
     db.execute("create index if not exists idx_notices_discovered_at on notices(discovered_at)")
     db.execute("create index if not exists idx_notice_categories_category on notice_categories(category)")
+    # Milestone 6: version history. One row per detected change to an already-stored notice (see
+    # collector.py's diff step) -- an append-only log rather than full-row snapshots, since in
+    # practice only a handful of fields can meaningfully change post-insert (content_hash,
+    # published_at, status). change_type is one of TENDER_CANCELLED/DEADLINE_CHANGED/CORRIGENDUM
+    # (the three the roadmap names, each of which also fires an alert) or the unclassified
+    # fallback "listing_changed" (recorded for the audit trail, never alerted -- see
+    # collector._classify_change).
+    db.execute("""create table if not exists notice_changes (
+        id text primary key, notice_id text not null, change_type text not null,
+        previous_value text, new_value text, detail text, detected_at text not null
+    )""")
+    db.execute("create index if not exists idx_notice_changes_notice_id on notice_changes(notice_id)")
     return db
+
+
+def _ensure_deliveries_schema(db):
+    """Milestone 6 additive column: which change (if any) triggered this alert -- 'new_notice' for
+    the original alert path, or a notice_changes.change_type for a change-triggered one. Null for
+    every row that predates this column (never fabricate a reason for history that has none)."""
+    columns = {row[1] for row in db.execute("pragma table_info(deliveries)")}
+    if "reason" in columns: return
+    with SCHEMA_MIGRATION_LOCK:
+        # Re-check under the lock, same double-checked-locking reason as _ensure_notices_schema.
+        columns = {row[1] for row in db.execute("pragma table_info(deliveries)")}
+        if "reason" not in columns:
+            db.execute("alter table deliveries add column reason text")
+        db.commit()
 
 
 def _ensure_notices_schema(db):

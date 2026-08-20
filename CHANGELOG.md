@@ -1,5 +1,49 @@
 # Changelog
 
+## Milestone 6 — Tender change detection
+
+- Notices stop being effectively immutable (audit §6/§9): a re-scrape of an already-known notice
+  now actually compares its listing entry against what's stored, instead of only bumping
+  `last_seen`. Detection is gated on `content_hash` genuinely diverging from the stored value (a
+  null→value transition is a first capture, not a change -- never fabricate a change that isn't
+  one) and requires the adapter to have handed back the real snippet text this cycle, not just its
+  hash (`adapters.py`'s candidate dict gains `context_snippet`, used transiently for one cycle and
+  never persisted verbatim -- same no-raw-blob discipline as `documents.py`).
+- New `collector._classify_change()` turns a detected change into one of the three types the
+  roadmap named, reusing existing, already-trusted primitives rather than inventing new ones:
+  `parsing.classify_notice_type`'s cancellation/corrigendum keyword scan (run against the new
+  snippet instead of a title) and `documents.extract_submission_deadline`'s keyword-gated date
+  extraction (a date only counts as a deadline change when it's found near an explicit
+  deadline-indicating keyword *and* differs from a real prior `published_at` -- both conditions
+  required, so "first time a date is found" is never misreported as "the date changed"). Anything
+  that doesn't match one of the three falls into an unclassified `listing_changed` bucket --
+  recorded for the audit trail, never alerted, rather than guessing.
+- New `notice_changes` table: an append-only version-history log (`change_type`, `previous_value`,
+  `new_value`, `detail`, `detected_at`) rather than full-row snapshots, since in practice only
+  `content_hash`/`published_at`/`status` can meaningfully change post-insert today. New
+  `GET /notices/{id}/changes` endpoint and `queries.notice_changes()`.
+- `TENDER_CANCELLED` also flips the notice's `status` to `cancelled` -- the first time a notice's
+  status can transition after insert (previously fixed forever at insert-time from the title
+  alone). This automatically drops the notice out of Milestone 5's company-profile matches, since
+  `matching.NON_ACTIONABLE_STATUSES` already excludes cancelled/awarded notices.
+- All three named change types fire the existing `alerts.send_whatsapp_alert()` call site (the
+  same fixed 3-parameter template as a new-notice alert) with the notice's title prefixed
+  in-memory (e.g. `[DEADLINE CHANGED] ...`) so the recipient can tell it's a resend about an
+  existing tender -- never written back to the stored title. A distinct alert shape per change
+  type is real Milestone 7 scope (the `AlertProvider` abstraction); this milestone deliberately
+  reuses the one call site that already exists rather than pre-building that abstraction early.
+- `deliveries` gains an additive `reason` column (`new_notice`, or a `notice_changes.change_type`)
+  so the existing alert history/audit trail can show *why* each alert fired -- null for every row
+  that predates this column (never fabricate a reason for history that has none).
+- Cross-notice linking (a separately-published "Corrigendum for XYZ Tender" notice referencing an
+  original one) is deliberately out of scope this milestone -- reliable fuzzy title/authority
+  matching across rows is a real capability, not a byproduct of same-row diffing, and doesn't fit
+  this milestone's "pure diff step over what one adapter cycle already fetches" scope.
+- Test suite: 138 → 147. New change-detection cases in `tests/test_collection_health.py`
+  (first-capture-is-not-a-change, identical-recollect-is-a-no-op, unclassified-edit-recorded-not-
+  alerted, cancellation/corrigendum/deadline-changed classification, first-time-date-found-is-not-
+  a-deadline-change) plus `GET /notices/{id}/changes` coverage in `tests/test_api.py`.
+
 ## Milestone 5 — Company profiles + matching
 
 - New `tender_monitor/matching.py`: `match_tender_to_company(notice, profile)`, pure business logic

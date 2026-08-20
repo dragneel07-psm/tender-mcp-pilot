@@ -191,6 +191,23 @@ class NoticesEndpointTests(ApiTestBase):
         _, detail = self.request("GET", f"/notices/{'a'*64}")
         self.assertIsNotNone(detail["seen_at"])
 
+    def test_changes_for_unknown_notice_is_404(self):
+        status, payload = self.request("GET", f"/notices/{'f'*64}/changes")
+        self.assertEqual(status, 404)
+
+    def test_changes_endpoint_returns_recorded_history(self):
+        self._seed_notice()
+        db = storage.conn()
+        db.execute("""insert into notice_changes (id,notice_id,change_type,previous_value,new_value,detail,detected_at)
+                   values (?,?,?,?,?,?,?)""",
+                   ("chg-1", "a"*64, "DEADLINE_CHANGED", "2026-01-15", "2026-03-01", "test", "2026-02-01T00:00:00+00:00"))
+        db.commit(); db.close()
+        status, payload = self.request("GET", f"/notices/{'a'*64}/changes")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["change_type"], "DEADLINE_CHANGED")
+        self.assertEqual(payload[0]["new_value"], "2026-03-01")
+
 
 class WatchlistsAndCollectionStatusTests(ApiTestBase):
     def test_create_and_delete_watchlist(self):

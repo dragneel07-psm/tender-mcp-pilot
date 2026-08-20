@@ -223,6 +223,103 @@ class CollectionHealthTests(unittest.TestCase):
         notices = queries.list_notices(source_id="test-source")
         self.assertEqual(len(notices), 1)
 
+    # -- Milestone 6: change detection -------------------------------------------------------
+
+    def test_first_capture_of_content_hash_is_not_a_change(self):
+        html = '<a href="/n/1">Road construction bolpatra notice</a> Published on the notice board.'
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        self.assertIsNotNone(notice["content_hash"])
+        self.assertEqual(queries.notice_changes(notice["id"]), [])
+
+    def test_identical_recollect_records_no_change(self):
+        html = '<a href="/n/1">Road construction bolpatra notice</a> Published on the notice board.'
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(self.source())
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(queries.notice_changes(notice["id"]), [])
+
+    def test_unrelated_snippet_edit_is_recorded_but_not_alerted(self):
+        v1 = '<a href="/n/1">Road construction bolpatra notice</a> Published on the notice board.'
+        v2 = '<a href="/n/1">Road construction bolpatra notice</a> Please visit the office for more information.'
+        with mock.patch.object(net, "fetch", return_value=v1):
+            collector.collect_one(self.source())
+        with mock.patch.object(net, "fetch", return_value=v2):
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        changes = queries.notice_changes(notice["id"])
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["change_type"], "listing_changed")
+        self.assertEqual(notice["status"], "active")  # unaffected
+        db = storage.conn()
+        delivery_count = db.execute("select count(*) from deliveries where notice_id=?", (notice["id"],)).fetchone()[0]
+        db.close()
+        self.assertEqual(delivery_count, 1)  # only the original new-notice alert -- no alert for an unclassified edit
+
+    def test_cancellation_keyword_in_snippet_marks_notice_cancelled_and_alerts(self):
+        v1 = '<a href="/n/1">Road construction bolpatra notice</a> Open for bidding.'
+        v2 = '<a href="/n/1">Road construction bolpatra notice</a> This tender has been cancelled.'
+        with mock.patch.object(net, "fetch", return_value=v1):
+            collector.collect_one(self.source())
+        with mock.patch.object(net, "fetch", return_value=v2):
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(notice["status"], "cancelled")
+        changes = queries.notice_changes(notice["id"])
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["change_type"], "TENDER_CANCELLED")
+        db = storage.conn()
+        reasons = [r[0] for r in db.execute("select reason from deliveries where notice_id=? order by rowid", (notice["id"],)).fetchall()]
+        db.close()
+        self.assertEqual(reasons, ["new_notice", "TENDER_CANCELLED"])
+
+    def test_corrigendum_keyword_in_snippet_is_recorded_and_alerts(self):
+        v1 = '<a href="/n/1">Road construction bolpatra notice</a> Open for bidding.'
+        v2 = '<a href="/n/1">Road construction bolpatra notice</a> Please see the corrigendum for updated details.'
+        with mock.patch.object(net, "fetch", return_value=v1):
+            collector.collect_one(self.source())
+        with mock.patch.object(net, "fetch", return_value=v2):
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(notice["status"], "active")  # corrigendum alone doesn't change status
+        changes = queries.notice_changes(notice["id"])
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["change_type"], "CORRIGENDUM")
+
+    def test_deadline_change_in_snippet_updates_published_at_and_alerts(self):
+        v1 = '<a href="/n/1">Road construction bolpatra notice</a> Submission deadline: 2026-01-15 for this tender.'
+        v2 = '<a href="/n/1">Road construction bolpatra notice</a> Submission deadline: 2026-03-01 for this tender.'
+        with mock.patch.object(net, "fetch", return_value=v1):
+            collector.collect_one(self.source())
+        first = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(first["published_at"], "2026-01-15")
+        with mock.patch.object(net, "fetch", return_value=v2):
+            collector.collect_one(self.source())
+        second = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(second["published_at"], "2026-03-01")
+        changes = queries.notice_changes(second["id"])
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["change_type"], "DEADLINE_CHANGED")
+        self.assertEqual(changes[0]["previous_value"], "2026-01-15")
+        self.assertEqual(changes[0]["new_value"], "2026-03-01")
+
+    def test_first_time_deadline_found_in_snippet_is_not_a_deadline_change(self):
+        # No date at all in v1 -- published_at stays null after the first cycle. Finding one for
+        # the first time in v2 is new information, not a *change* from a real prior value, so this
+        # must not fire DEADLINE_CHANGED (there's nothing honest to compare it against).
+        v1 = '<a href="/n/1">Road construction bolpatra notice</a> Open for bidding.'
+        v2 = '<a href="/n/1">Road construction bolpatra notice</a> Submission deadline: 2026-03-01 for this tender.'
+        with mock.patch.object(net, "fetch", return_value=v1):
+            collector.collect_one(self.source())
+        self.assertIsNone(queries.list_notices(source_id="test-source")[0]["published_at"])
+        with mock.patch.object(net, "fetch", return_value=v2):
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        changes = queries.notice_changes(notice["id"])
+        self.assertNotIn("DEADLINE_CHANGED", [c["change_type"] for c in changes])
+
     def test_document_processing_is_off_by_default(self):
         html = '<a href="/n/1">Road construction bolpatra notice</a>'
         with mock.patch.object(net, "fetch", return_value=html), \

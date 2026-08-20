@@ -59,6 +59,11 @@ class GenericHtmlLinkAdapter(BaseTenderSource):
                 "status": parsing.status_for_notice_type(notice_type),
                 "categories": parsing.classify_categories(title),
                 "content_hash": hashlib.sha256(snippet.encode()).hexdigest() if snippet else None,
+                # Milestone 6: the raw snippet itself, not just its hash -- collector.py needs the
+                # actual text to classify *what* changed on a re-scrape (a changed hash alone only
+                # says "something did"). Never persisted verbatim (same no-raw-blob discipline as
+                # documents.py); used transiently within one collection cycle then discarded.
+                "context_snippet": snippet or None,
                 # 0.9 = found directly on the listing page; downgraded to 0.5 if no date is ever
                 # found; _resolve_missing_dates below upgrades to 0.7 for a per-notice-page find.
                 "confidence_score": 0.9 if published else 0.5,

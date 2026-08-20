@@ -61,7 +61,7 @@ def source_summary():
 
 def alert_summary():
     configured = all(os.getenv(key) for key in ("WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME"))
-    db=storage.conn(); rows=[dict(r) for r in db.execute("select notice_id, delivered_at, status, detail from deliveries order by rowid desc limit 8")]; db.close()
+    db=storage.conn(); rows=[dict(r) for r in db.execute("select notice_id, delivered_at, status, detail, reason from deliveries order by rowid desc limit 8")]; db.close()
     return {"configured": configured, "deliveries": rows}
 
 
@@ -72,6 +72,16 @@ def details(notice_id):
     result["categories"]=[dict(r) for r in db.execute(
         "select category, confidence_score from notice_categories where notice_id=? order by category", (notice_id,))]
     db.close(); return result
+
+
+def notice_changes(notice_id):
+    """Milestone 6: a notice's full version history, oldest first (so a reader sees the sequence of
+    events in the order they happened, not reverse-chronological like the dashboard's alert feed)."""
+    db=storage.conn()
+    rows=[dict(r) for r in db.execute(
+        "select change_type, previous_value, new_value, detail, detected_at from notice_changes where notice_id=? order by detected_at asc",
+        (notice_id,))]
+    db.close(); return rows
 
 
 def matches_for_company(profile_id, limit=20, offset=0, min_score=0.0):

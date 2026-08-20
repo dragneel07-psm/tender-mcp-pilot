@@ -41,6 +41,14 @@ notice against that profile and returns them ranked, each with a `match_score` (
 Cancelled/awarded notices are excluded, and a dimension the profile didn't configure is left out
 of the score entirely rather than guessed at.
 
+## Change detection
+
+Re-scraping an already-known notice now compares it against what's stored instead of only
+recording that it's still listed. A genuine change gets classified as `TENDER_CANCELLED`,
+`DEADLINE_CHANGED`, or `CORRIGENDUM` (each fires the same WhatsApp alert as a new notice, title
+prefixed to signal it's an update) or the unclassified `listing_changed` (recorded, not alerted).
+`GET /notices/{id}/changes` returns a notice's full version history.
+
 ## Alerts
 
 Copy `.env.example` to `.env`, then set `WHATSAPP_API_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_RECIPIENT`, and `WHATSAPP_TEMPLATE_NAME`. Each newly collected tender will then send a WhatsApp template alert automatically. The approved template must have three body variables: local government, notice title, and notice link. Production WhatsApp alerts require recipient opt-in.
