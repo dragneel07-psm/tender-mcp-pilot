@@ -124,6 +124,36 @@ class CollectionHealthTests(unittest.TestCase):
             os.environ.pop("NOTICE_PAGE_LOOKUP_LIMIT", None)
             os.environ.pop("NOTICE_PAGE_LOOKUP_WORKERS", None)
 
+    def test_short_titles_are_filtered_out_even_if_relevant(self):
+        html = '<a href="/n/1">Bid now</a>'  # 7 chars: contains a tender word, but under the length floor
+        with mock.patch.object(app, "fetch", return_value=html):
+            result = app.collect_one(self.source())
+        self.assertEqual(result["new"], 0)
+
+    def test_irrelevant_links_are_filtered_out(self):
+        html = '<a href="/n/1">Staff holiday announcement today</a>'
+        with mock.patch.object(app, "fetch", return_value=html):
+            result = app.collect_one(self.source())
+        self.assertEqual(result["new"], 0)
+
+    def test_relevant_notice_is_stored(self):
+        html = '<a href="/n/1">Road construction bolpatra notice</a>'
+        with mock.patch.object(app, "fetch", return_value=html):
+            result = app.collect_one(self.source())
+        self.assertEqual(result["new"], 1)
+        notices = app.list_notices(source_id="test-source")
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["title"], "Road construction bolpatra notice")
+
+    def test_recollecting_same_source_does_not_duplicate(self):
+        html = '<a href="/n/1">Road construction bolpatra notice</a>'
+        with mock.patch.object(app, "fetch", return_value=html):
+            app.collect_one(self.source())
+            result = app.collect_one(self.source())
+        self.assertEqual(result["new"], 0)  # already stored; "insert or ignore" adds nothing new
+        notices = app.list_notices(source_id="test-source")
+        self.assertEqual(len(notices), 1)
+
     def test_manual_single_source_collect_ignores_skip(self):
         src = self.source()
         with mock.patch.object(app, "sources", return_value=[src]):
