@@ -3,36 +3,52 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-import app
+from tender_monitor import collector, net, queries, storage
 
 
 class CollectionHealthTests(unittest.TestCase):
+    # config.load_dotenv() (triggered by importing tender_monitor.collector, above) loads this
+    # repo's real .env -- including live WhatsApp Business credentials -- into os.environ for the
+    # whole process. Several tests below insert a genuinely new notice through the real collect_one
+    # path, which fires an alert for every new notice. Without clearing these, that alert send is
+    # NOT a mock: it is a real HTTPS call to Meta's Graph API with this project's real access token,
+    # capable of delivering a real WhatsApp message with fabricated test content to the real
+    # configured recipient. Clearing them makes send_whatsapp_alert take its own designed
+    # "not configured" no-op path (alerts.py) -- the same path production takes when unconfigured.
+    WHATSAPP_KEYS = ("WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME")
+
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
-        self._orig_db = app.DB
-        app.DB = Path(self.tmpdir.name) / "test.db"
+        self._orig_db = storage.DB
+        storage.DB = Path(self.tmpdir.name) / "test.db"
         os.environ["SOURCE_FAILURE_SKIP_THRESHOLD"] = "3"
         os.environ["SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES"] = "360"
+        self._orig_whatsapp_env = {k: os.environ.get(k) for k in self.WHATSAPP_KEYS}
+        for k in self.WHATSAPP_KEYS: os.environ.pop(k, None)
 
     def tearDown(self):
-        app.DB = self._orig_db
+        storage.DB = self._orig_db
         os.environ.pop("SOURCE_FAILURE_SKIP_THRESHOLD", None)
         os.environ.pop("SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES", None)
+        for k, v in self._orig_whatsapp_env.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
 
     def source(self):
         return {"id": "test-source", "name": "Test Municipality", "url": "https://example.gov.np",
                 "notice_url": "https://example.gov.np/notices", "keywords": []}
 
     def test_failure_increments_consecutive_streak(self):
-        with mock.patch.object(app, "fetch", side_effect=app.urllib.error.URLError("boom")):
-            app.collect_one(self.source())
-            app.collect_one(self.source())
-        db = app.conn()
+        with mock.patch.object(net, "fetch", side_effect=urllib.error.URLError("boom")):
+            collector.collect_one(self.source())
+            collector.collect_one(self.source())
+        db = storage.conn()
         row = db.execute("select consecutive_failures, last_status from source_health where source_id=?",
                           ("test-source",)).fetchone()
         db.close()
@@ -40,11 +56,11 @@ class CollectionHealthTests(unittest.TestCase):
         self.assertEqual(row["last_status"], "error")
 
     def test_success_resets_streak(self):
-        with mock.patch.object(app, "fetch", side_effect=app.urllib.error.URLError("boom")):
-            app.collect_one(self.source())
-        with mock.patch.object(app, "fetch", return_value="<html></html>"):
-            app.collect_one(self.source())
-        db = app.conn()
+        with mock.patch.object(net, "fetch", side_effect=urllib.error.URLError("boom")):
+            collector.collect_one(self.source())
+        with mock.patch.object(net, "fetch", return_value="<html></html>"):
+            collector.collect_one(self.source())
+        db = storage.conn()
         row = db.execute("select consecutive_failures, last_status from source_health where source_id=?",
                           ("test-source",)).fetchone()
         db.close()
@@ -53,12 +69,12 @@ class CollectionHealthTests(unittest.TestCase):
 
     def test_scheduled_sweep_skips_after_threshold(self):
         src = self.source()
-        with mock.patch.object(app, "sources", return_value=[src]):
-            with mock.patch.object(app, "fetch", side_effect=app.urllib.error.URLError("boom")):
+        with mock.patch.object(storage, "sources", return_value=[src]):
+            with mock.patch.object(net, "fetch", side_effect=urllib.error.URLError("boom")):
                 for _ in range(3):
-                    app.collect_all()
-            with mock.patch.object(app, "fetch", return_value="<html></html>") as fetch_mock:
-                results = app.collect_all()
+                    collector.collect_all()
+            with mock.patch.object(net, "fetch", return_value="<html></html>") as fetch_mock:
+                results = collector.collect_all()
                 fetch_mock.assert_not_called()
         self.assertEqual(results[0]["status"], "skipped")
 
@@ -69,13 +85,13 @@ class CollectionHealthTests(unittest.TestCase):
         sample_html = '<a href="/notices/1">Tender notice for road construction bolpatra</a>'
         sources_list = [{"id": f"src-{i}", "name": f"Source {i}", "url": "https://example.gov.np",
                           "notice_url": "https://example.gov.np/notices", "keywords": []} for i in range(60)]
-        with mock.patch.object(app, "fetch", return_value=sample_html):
+        with mock.patch.object(net, "fetch", return_value=sample_html):
             with ThreadPoolExecutor(max_workers=40) as pool:
-                results = list(pool.map(app.collect_one, sources_list))
+                results = list(pool.map(collector.collect_one, sources_list))
         self.assertEqual(len(results), 60)
         for result in results:
             self.assertEqual(result["status"], "ok")
-        db = app.conn()
+        db = storage.conn()
         total = db.execute("select count(*) from notices").fetchone()[0]
         db.close()
         self.assertEqual(total, 60)  # each source's notice has a distinct digest (source id is part of it)
@@ -93,8 +109,8 @@ class CollectionHealthTests(unittest.TestCase):
                 call_log.append(url)
                 if url == "https://example.gov.np/notices": return links
                 return "<html>no date on this page</html>"
-            with mock.patch.object(app, "fetch", side_effect=fake_fetch):
-                result = app.collect_one(self.source())
+            with mock.patch.object(net, "fetch", side_effect=fake_fetch):
+                result = collector.collect_one(self.source())
             self.assertEqual(result["status"], "ok")
             per_notice_calls = [c for c in call_log if c != "https://example.gov.np/notices"]
             self.assertLessEqual(len(per_notice_calls), 5)
@@ -116,8 +132,8 @@ class CollectionHealthTests(unittest.TestCase):
                 time.sleep(0.05)
                 with lock: state["current"] -= 1
                 return "<html>no date on this page</html>"
-            with mock.patch.object(app, "fetch", side_effect=fake_fetch):
-                result = app.collect_one(self.source())
+            with mock.patch.object(net, "fetch", side_effect=fake_fetch):
+                result = collector.collect_one(self.source())
             self.assertEqual(result["status"], "ok")
             self.assertGreater(state["max"], 1, "lookups ran one at a time instead of overlapping")
         finally:
@@ -126,42 +142,42 @@ class CollectionHealthTests(unittest.TestCase):
 
     def test_short_titles_are_filtered_out_even_if_relevant(self):
         html = '<a href="/n/1">Bid now</a>'  # 7 chars: contains a tender word, but under the length floor
-        with mock.patch.object(app, "fetch", return_value=html):
-            result = app.collect_one(self.source())
+        with mock.patch.object(net, "fetch", return_value=html):
+            result = collector.collect_one(self.source())
         self.assertEqual(result["new"], 0)
 
     def test_irrelevant_links_are_filtered_out(self):
         html = '<a href="/n/1">Staff holiday announcement today</a>'
-        with mock.patch.object(app, "fetch", return_value=html):
-            result = app.collect_one(self.source())
+        with mock.patch.object(net, "fetch", return_value=html):
+            result = collector.collect_one(self.source())
         self.assertEqual(result["new"], 0)
 
     def test_relevant_notice_is_stored(self):
         html = '<a href="/n/1">Road construction bolpatra notice</a>'
-        with mock.patch.object(app, "fetch", return_value=html):
-            result = app.collect_one(self.source())
+        with mock.patch.object(net, "fetch", return_value=html):
+            result = collector.collect_one(self.source())
         self.assertEqual(result["new"], 1)
-        notices = app.list_notices(source_id="test-source")
+        notices = queries.list_notices(source_id="test-source")
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0]["title"], "Road construction bolpatra notice")
 
     def test_recollecting_same_source_does_not_duplicate(self):
         html = '<a href="/n/1">Road construction bolpatra notice</a>'
-        with mock.patch.object(app, "fetch", return_value=html):
-            app.collect_one(self.source())
-            result = app.collect_one(self.source())
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(self.source())
+            result = collector.collect_one(self.source())
         self.assertEqual(result["new"], 0)  # already stored; "insert or ignore" adds nothing new
-        notices = app.list_notices(source_id="test-source")
+        notices = queries.list_notices(source_id="test-source")
         self.assertEqual(len(notices), 1)
 
     def test_manual_single_source_collect_ignores_skip(self):
         src = self.source()
-        with mock.patch.object(app, "sources", return_value=[src]):
-            with mock.patch.object(app, "fetch", side_effect=app.urllib.error.URLError("boom")):
+        with mock.patch.object(storage, "sources", return_value=[src]):
+            with mock.patch.object(net, "fetch", side_effect=urllib.error.URLError("boom")):
                 for _ in range(3):
-                    app.collect_all()
-            with mock.patch.object(app, "fetch", return_value="<html></html>") as fetch_mock:
-                results = app.collect_all(source_id="test-source")
+                    collector.collect_all()
+            with mock.patch.object(net, "fetch", return_value="<html></html>") as fetch_mock:
+                results = collector.collect_all(source_id="test-source")
                 fetch_mock.assert_called_once()
         self.assertEqual(results[0]["status"], "ok")
 

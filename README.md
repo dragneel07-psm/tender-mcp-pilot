@@ -1,6 +1,10 @@
 # Sudurpashchim Tender Monitor
 
-A private, dependency-free prototype that monitors tender pages from the four agreed Kailali-area local governments, stores notices locally, exposes a small HTTP API, and implements a standard-input/standard-output MCP interface for an AI client.
+A private, dependency-free prototype that monitors tender pages from local governments, stores notices locally, exposes a small HTTP API, and implements a standard-input/standard-output MCP interface for an AI client.
+
+## Architecture
+
+`app.py` is a thin entrypoint shim; all logic lives in the `tender_monitor/` package (config, parsing, net, storage, health, discovery, alerts, collector, queries, api, scheduler, mcp_server, cli — one module per responsibility). See `ARCHITECTURE_AUDIT.md` for a full breakdown of the pipeline, storage model, and known gaps, and `ROADMAP.md` for where this is headed next.
 
 ## Run it
 
