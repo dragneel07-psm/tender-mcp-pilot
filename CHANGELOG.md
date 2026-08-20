@@ -1,5 +1,26 @@
 # Changelog
 
+## Milestone 8 — MCP 2.0
+
+- Expanded from 3 MCP tools to 11, now that source health, collection status, matching,
+  watchlists, and change detection all exist as real backing functions (Milestones 2-7) rather
+  than needing to be stubbed: `search_tenders`, `latest_tenders`, `tender_details` (existing,
+  upgraded), plus new `tender_documents`, `tender_changes`, `source_health`, `collection_status`,
+  `list_watchlists`, `watchlist_notices`, `list_company_profiles`, `match_tenders_to_company`.
+  Every tool is a thin wrapper over an existing `queries`/`storage` function -- no new business
+  logic, same "MCP tools are read-models over what the HTTP API already exposes" shape as before.
+- Every list-shaped tool now takes `limit`/`offset`, delegated to the same clamping (1-100)
+  `list_notices()`/`matches_for_company()` already apply -- no new pagination logic invented in
+  `mcp_server.py` itself (audit §8).
+- Every tool now returns a structured `{"error": {"code": ..., "message": ...}}` object on
+  failure (`invalid_argument`, `not_found`, `unknown_tool`, `internal_error`) instead of a bare
+  string, so a client can branch on `code` rather than string-matching a message (audit §8). A
+  handler exception is caught per-call and turned into an `internal_error` result rather than
+  crashing the stdio loop -- same per-call isolation principle `collect_one` already applies
+  per-source.
+- Test suite: 177 → 190. `tests/test_mcp.py` covers every new tool's happy path plus its
+  not-found/invalid-argument/internal-error paths.
+
 ## Milestone 7 — Advanced watchlists + alert engine
 
 - **AlertProvider abstraction** (`alerts.py` rewrite): an `AlertProvider` ABC (`is_configured`,

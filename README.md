@@ -30,7 +30,7 @@ The collector checks up to eight sources in parallel. Slow websites are retried 
 
 The dashboard starts at `http://127.0.0.1:8787`. The JSON API remains available at `/health`, `/notices`, and `/notices?query=road`.
 
-To use it as an MCP server, configure your MCP client to launch `python3 /absolute/path/to/app.py mcp`. It provides `search_tenders`, `latest_tenders`, and `tender_details`.
+To use it as an MCP server, configure your MCP client to launch `python3 /absolute/path/to/app.py mcp`. It provides 11 tools covering search (`search_tenders`, `latest_tenders`, `tender_details`, `tender_documents`, `tender_changes`), operations (`source_health`, `collection_status`), watchlists (`list_watchlists`, `watchlist_notices`), and company matching (`list_company_profiles`, `match_tenders_to_company`). Every list-shaped tool supports `limit`/`offset` pagination, and every tool returns a structured `{"error": {"code": ..., "message": ...}}` object on failure rather than a bare string.
 
 ## Company profiles & matching
 
