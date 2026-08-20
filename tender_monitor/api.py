@@ -57,16 +57,19 @@ class Api(BaseHTTPRequestHandler):
         if self.path == "/watchlists":
             try:
                 payload=self.json_body()
-                items=storage.watchlists(); item=storage.validate_watchlist(payload)
-                if any(existing["id"] == item["id"] for existing in items): return self.respond({"error":"A watchlist with this name already exists."},409)
-                items.append(item); storage.save_watchlists(items); return self.respond(item,201)
+                with storage.REGISTRY_WRITE_LOCK:
+                    items=storage.watchlists(); item=storage.validate_watchlist(payload)
+                    if any(existing["id"] == item["id"] for existing in items): return self.respond({"error":"A watchlist with this name already exists."},409)
+                    items.append(item); storage.save_watchlists(items)
+                return self.respond(item,201)
             except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
         if self.path == "/sources":
             try:
                 payload=self.json_body()
-                items=storage.sources(); item=storage.validate_source(payload)
-                if any(existing["id"] == item["id"] for existing in items): return self.respond({"error":"A source with this name already exists."},409)
-                items.append(item); storage.save_sources(items)
+                with storage.REGISTRY_WRITE_LOCK:
+                    items=storage.sources(); item=storage.validate_source(payload)
+                    if any(existing["id"] == item["id"] for existing in items): return self.respond({"error":"A source with this name already exists."},409)
+                    items.append(item); storage.save_sources(items)
                 threading.Thread(target=collector.collect_one, args=(item,), daemon=True).start()
                 return self.respond({**item,"collection":"started"},201)
             except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
@@ -90,31 +93,39 @@ class Api(BaseHTTPRequestHandler):
         if watchlist_match:
             try:
                 payload=self.json_body()
-                items=storage.watchlists(); index=next((i for i, item in enumerate(items) if item["id"]==watchlist_match.group(1)), None)
-                if index is None: return self.respond({"error":"not found"},404)
-                items[index]=storage.validate_watchlist(payload,items[index]); storage.save_watchlists(items); return self.respond(items[index])
+                with storage.REGISTRY_WRITE_LOCK:
+                    items=storage.watchlists(); index=next((i for i, item in enumerate(items) if item["id"]==watchlist_match.group(1)), None)
+                    if index is None: return self.respond({"error":"not found"},404)
+                    items[index]=storage.validate_watchlist(payload,items[index]); storage.save_watchlists(items)
+                return self.respond(items[index])
             except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
         match=re.fullmatch(r"/sources/([a-z0-9-]+)", self.path)
         if not match: return self.respond({"error":"not found"},404)
         try:
             payload=self.json_body()
-            items=storage.sources(); index=next((i for i, item in enumerate(items) if item["id"]==match.group(1)), None)
-            if index is None: return self.respond({"error":"not found"},404)
-            items[index]=storage.validate_source(payload,items[index]); storage.save_sources(items); self.respond(items[index])
+            with storage.REGISTRY_WRITE_LOCK:
+                items=storage.sources(); index=next((i for i, item in enumerate(items) if item["id"]==match.group(1)), None)
+                if index is None: return self.respond({"error":"not found"},404)
+                items[index]=storage.validate_source(payload,items[index]); storage.save_sources(items)
+            self.respond(items[index])
         except (ValueError, json.JSONDecodeError) as exc: self.respond({"error":str(exc)},400)
     def do_DELETE(self):
         if not self.require_auth(): return
         watchlist_match=re.fullmatch(r"/watchlists/(wl-[a-f0-9]+)", self.path)
         if watchlist_match:
-            items=storage.watchlists(); remaining=[item for item in items if item["id"]!=watchlist_match.group(1)]
-            if len(remaining)==len(items): return self.respond({"error":"not found"},404)
-            storage.save_watchlists(remaining); return self.respond({"removed":watchlist_match.group(1)})
+            with storage.REGISTRY_WRITE_LOCK:
+                items=storage.watchlists(); remaining=[item for item in items if item["id"]!=watchlist_match.group(1)]
+                if len(remaining)==len(items): return self.respond({"error":"not found"},404)
+                storage.save_watchlists(remaining)
+            return self.respond({"removed":watchlist_match.group(1)})
         match=re.fullmatch(r"/sources/([a-z0-9-]+)", self.path)
         if not match: return self.respond({"error":"not found"},404)
-        items=storage.sources(); remaining=[item for item in items if item["id"]!=match.group(1)]
-        if len(remaining)==len(items): return self.respond({"error":"not found"},404)
-        storage.save_sources(remaining)
-        source_id=match.group(1); lists=storage.watchlists()
-        for item in lists: item["source_ids"]=[value for value in item.get("source_ids",[]) if value!=source_id]
-        storage.save_watchlists(lists); self.respond({"removed":source_id})
+        with storage.REGISTRY_WRITE_LOCK:
+            items=storage.sources(); remaining=[item for item in items if item["id"]!=match.group(1)]
+            if len(remaining)==len(items): return self.respond({"error":"not found"},404)
+            storage.save_sources(remaining)
+            source_id=match.group(1); lists=storage.watchlists()
+            for item in lists: item["source_ids"]=[value for value in item.get("source_ids",[]) if value!=source_id]
+            storage.save_watchlists(lists)
+        self.respond({"removed":source_id})
     def log_message(self, *_): pass

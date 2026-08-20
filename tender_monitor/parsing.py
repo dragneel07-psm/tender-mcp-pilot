@@ -60,13 +60,20 @@ def first_date(text):
     return None
 
 
+def context_snippet(body, href):
+    """The ~1.6KB of listing-page text around a link, HTML-stripped and cleaned, or "" if the href
+    isn't found verbatim in body. This is the richest text we extract that ISN'T part of a
+    notice's identity digest (source_id+url+title) -- see content_hash in collector.py, which
+    hashes this specifically so it can later detect "something about this listing entry changed"
+    even when the title/URL that define identity stayed the same."""
+    position=body.find(href)
+    if position < 0: return ""
+    return clean(re.sub(r"<[^>]+>", " ", body[max(0,position-700):position+900]))
+
+
 def published_date(body, href, title):
     """Return a published-date string only when the source page exposes one near its link."""
-    candidates=[title]
-    position=body.find(href)
-    if position >= 0:
-        candidates.append(clean(re.sub(r"<[^>]+>", " ", body[max(0,position-700):position+900])))
-    for candidate in candidates:
+    for candidate in (title, context_snippet(body, href)):
         date=first_date(candidate)
         if date: return date
     return None
@@ -75,3 +82,30 @@ def published_date(body, href, title):
 def relevant(text, source):
     lower=text.lower()
     return any(word.lower() in lower for word in TENDER_WORDS + tuple(source.get("keywords", [])))
+
+
+# Rule-based, title-only classification -- no document intelligence required (that's Milestone 3).
+# Checked in this order because a notice can contain multiple signal words (e.g. a corrigendum
+# about a cancelled tender); the most specific/actionable classification wins.
+NOTICE_TYPE_KEYWORDS = (
+    ("cancellation", ("cancel", "cancelled", "cancellation", "रद्द")),
+    ("award", ("award", "awarded", "स्वीकृत")),
+    ("corrigendum", ("corrigendum", "addendum", "amendment", "संशोधन", "थपघट")),
+)
+NOTICE_STATUS_BY_TYPE = {"cancellation": "cancelled", "award": "awarded"}
+
+
+def classify_notice_type(title):
+    """One of 'cancellation', 'award', 'corrigendum', or the default 'tender_notice'."""
+    lower=title.lower()
+    for notice_type, keywords in NOTICE_TYPE_KEYWORDS:
+        if any(keyword.lower() in lower for keyword in keywords):
+            return notice_type
+    return "tender_notice"
+
+
+def status_for_notice_type(notice_type):
+    """Derived purely from notice_type, since we don't yet extract a real deadline to compute an
+    open/closed status from (that needs document intelligence -- Milestone 3). 'active' is a
+    default meaning "still being collected as relevant", not a claim about a real deadline."""
+    return NOTICE_STATUS_BY_TYPE.get(notice_type, "active")

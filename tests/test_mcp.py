@@ -31,8 +31,9 @@ class McpResponseTests(unittest.TestCase):
 
     def test_search_tenders_returns_json_encoded_content(self):
         db = storage.conn()
-        db.execute("insert into notices values (?,?,?,?,?,?,?,?,?,?)",
-                   ("d1", "src", "Authority", "Road tender", "https://x/1", "2026-01-01T00:00:00+00:00", 1, "Road tender", None, None))
+        db.execute("""insert into notices (id,source_id,authority,title,url,discovered_at,relevant,raw_text)
+                   values (?,?,?,?,?,?,?,?)""",
+                   ("d1", "src", "Authority", "Road tender", "https://x/1", "2026-01-01T00:00:00+00:00", 1, "Road tender"))
         db.commit(); db.close()
         result = mcp_server.mcp_response({"method": "tools/call", "params": {"name": "search_tenders", "arguments": {"query": "road"}}})
         payload = json.loads(result["content"][0]["text"])

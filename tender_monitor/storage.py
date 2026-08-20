@@ -2,18 +2,47 @@
 import hashlib
 import ipaddress
 import json
+import os
 import sqlite3
 import threading
 import urllib.parse
 
 from .config import DB, SOURCES, WATCHLISTS
-from .parsing import clean
+from .parsing import classify_notice_type, clean, status_for_notice_type
 
 # SQLite allows only one writer at a time; under WAL, concurrent writers past that point block on
 # the busy handler and can still hit "database is locked" once enough threads are writing at once
 # (this happened in production once COLLECTOR_WORKERS was raised). Funnel every write through this
 # lock instead of relying solely on busy_timeout, so writers queue in-process rather than erroring.
 DB_WRITE_LOCK = threading.Lock()
+
+# A separate lock from DB_WRITE_LOCK, deliberately: collector.py calls conn() from inside a
+# `with DB_WRITE_LOCK:` block, and threading.Lock is not reentrant -- a thread already holding
+# DB_WRITE_LOCK would deadlock against itself if conn()'s own schema check tried to acquire the
+# same lock. Guards the one-time (per fresh database) schema migration below.
+SCHEMA_MIGRATION_LOCK = threading.Lock()
+
+# Every read-modify-write cycle against sources.json/watchlists.json (add/edit/delete a source or
+# watchlist, or the bootstrap-* import) must hold this for its whole read...mutate...save span, not
+# just the save -- save_json()'s temp-file-then-rename is atomic per write, but two concurrent
+# mutations can still race on the read they both start from and the second one's write clobbers the
+# first's change. The two files are covered by one lock because deleting a source also mutates
+# watchlists (removing it from every watchlist's source_ids) in the same logical operation.
+REGISTRY_WRITE_LOCK = threading.Lock()
+
+# Additive Milestone 2 columns. organization/province/notice_type/status/first_seen/last_seen are
+# backfilled once for rows that predate this migration (see _backfill_notices_schema). district and
+# content_hash are NOT backfilled -- there is no honest way to derive them for already-collected
+# rows (never fabricate data), so they stay null until a notice is re-seen (content_hash) or a real
+# district data source exists (Milestone 3+).
+NOTICES_MIGRATION_COLUMNS = (
+    ("seen_at", "text"), ("published_at", "text"),
+    ("organization", "text"), ("province", "text"), ("district", "text"),
+    ("notice_type", "text"), ("status", "text"),
+    ("first_seen", "text"), ("last_seen", "text"),
+    ("content_hash", "text"), ("confidence_score", "real"),
+)
+BACKFILLABLE_COLUMNS = ("organization", "province", "notice_type", "status", "first_seen", "last_seen")
 
 
 def conn():
@@ -26,9 +55,7 @@ def conn():
         title text not null, url text not null, discovered_at text not null,
         relevant integer not null default 0, raw_text text not null
     )""")
-    columns = {row[1] for row in db.execute("pragma table_info(notices)")}
-    if "seen_at" not in columns: db.execute("alter table notices add column seen_at text")
-    if "published_at" not in columns: db.execute("alter table notices add column published_at text")
+    _ensure_notices_schema(db)
     db.execute("create table if not exists runs (source_id text, ran_at text, status text, detail text)")
     db.execute("""create table if not exists deliveries (
         notice_id text, delivered_at text, status text, detail text
@@ -40,12 +67,63 @@ def conn():
     return db
 
 
+def _ensure_notices_schema(db):
+    columns = {row[1] for row in db.execute("pragma table_info(notices)")}
+    missing = [name for name, _ in NOTICES_MIGRATION_COLUMNS if name not in columns]
+    if not missing: return
+    with SCHEMA_MIGRATION_LOCK:
+        # Re-check under the lock: with up to dozens of collector threads able to call conn()
+        # concurrently right after a fresh deploy, another thread may have already migrated the
+        # schema between our unlocked check above and acquiring this lock.
+        columns = {row[1] for row in db.execute("pragma table_info(notices)")}
+        missing = [name for name, ddl in NOTICES_MIGRATION_COLUMNS if name not in columns]
+        if not missing: return
+        for name, ddl in NOTICES_MIGRATION_COLUMNS:
+            if name in missing:
+                db.execute(f"alter table notices add column {name} {ddl}")
+        backfillable = [name for name in missing if name in BACKFILLABLE_COLUMNS]
+        if backfillable:
+            _backfill_notices_schema(db, backfillable)
+        db.commit()
+
+
+def _backfill_notices_schema(db, backfillable_columns):
+    """One-time backfill for rows that existed before their column was added. Only reached from
+    _ensure_notices_schema while holding SCHEMA_MIGRATION_LOCK, so this runs exactly once per
+    database, not on every connection."""
+    if "organization" in backfillable_columns:
+        db.execute("update notices set organization = authority where organization is null")
+    if "first_seen" in backfillable_columns:
+        db.execute("update notices set first_seen = discovered_at where first_seen is null")
+    if "last_seen" in backfillable_columns:
+        db.execute("update notices set last_seen = discovered_at where last_seen is null")
+    if "province" in backfillable_columns:
+        try:
+            province_by_source = {s["id"]: s.get("province") for s in sources()}
+        except (FileNotFoundError, json.JSONDecodeError):
+            province_by_source = {}
+        for source_id_value, province in province_by_source.items():
+            if province:
+                db.execute("update notices set province = ? where source_id = ? and province is null", (province, source_id_value))
+    if "notice_type" in backfillable_columns or "status" in backfillable_columns:
+        for row in db.execute("select id, title from notices where notice_type is null or status is null").fetchall():
+            notice_type = classify_notice_type(row["title"])
+            db.execute("update notices set notice_type = coalesce(notice_type, ?), status = coalesce(status, ?) where id = ?",
+                       (notice_type, status_for_notice_type(notice_type), row["id"]))
+
+
 def source_id(name): return "sp-" + hashlib.sha1(name.encode()).hexdigest()[:12]
 def normalized_host(url): return urllib.parse.urlparse(url).netloc.lower().removeprefix("www.")
 
 
 def save_json(path, payload):
-    temporary=path.with_name(path.name+".tmp")
+    # The temp filename is unique per (process, thread): a shared fixed ".tmp" name meant two
+    # concurrent callers could write over *each other's* temp file before either replace()d it,
+    # corrupting or crashing both writes -- confirmed happening in practice (FileNotFoundError /
+    # JSONDecodeError) while building the REGISTRY_WRITE_LOCK regression test below. The lock is
+    # the primary fix (it serializes the whole read-modify-write cycle); this is defense in depth
+    # so save_json() itself can't corrupt data even if some future caller forgets to hold it.
+    temporary=path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2)+"\n")
     temporary.replace(path)
 

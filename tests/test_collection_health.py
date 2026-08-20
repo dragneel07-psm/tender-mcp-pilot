@@ -161,6 +161,48 @@ class CollectionHealthTests(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0]["title"], "Road construction bolpatra notice")
 
+    def test_new_notice_gets_full_milestone2_fields(self):
+        html = '<a href="/n/1">Road construction bolpatra notice</a>'
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(notice["organization"], "Test Municipality")
+        self.assertIsNone(notice["province"])  # self.source() sets no province
+        self.assertIsNone(notice["district"])  # never fabricated -- no data source for this yet
+        self.assertEqual(notice["notice_type"], "tender_notice")
+        self.assertEqual(notice["status"], "active")
+        self.assertIsNotNone(notice["first_seen"])
+        self.assertEqual(notice["first_seen"], notice["last_seen"])
+        self.assertIsNotNone(notice["content_hash"])
+        self.assertIn(notice["confidence_score"], (0.5, 0.7, 0.9))
+
+    def test_province_is_stamped_from_source(self):
+        src = self.source(); src["province"] = "Karnali"
+        html = '<a href="/n/1">Road construction bolpatra notice</a>'
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(src)
+        notice = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(notice["province"], "Karnali")
+
+    def test_recollecting_updates_last_seen_but_not_first_seen(self):
+        html = '<a href="/n/1">Road construction bolpatra notice</a>'
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(self.source())
+        first = queries.list_notices(source_id="test-source")[0]
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(self.source())
+        second = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(second["first_seen"], first["first_seen"])  # immutable once set
+        self.assertGreaterEqual(second["last_seen"], first["last_seen"])  # advances on every re-encounter
+
+    def test_cancellation_keyword_sets_notice_type_and_status(self):
+        html = '<a href="/n/1">Tender cancelled: road construction bolpatra</a>'
+        with mock.patch.object(net, "fetch", return_value=html):
+            collector.collect_one(self.source())
+        notice = queries.list_notices(source_id="test-source")[0]
+        self.assertEqual(notice["notice_type"], "cancellation")
+        self.assertEqual(notice["status"], "cancelled")
+
     def test_recollecting_same_source_does_not_duplicate(self):
         html = '<a href="/n/1">Road construction bolpatra notice</a>'
         with mock.patch.object(net, "fetch", return_value=html):

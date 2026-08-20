@@ -40,15 +40,20 @@ def tag_existing_sources(items):
 
 
 def bootstrap_province(province_code):
-    existing=storage.sources(); by_host={storage.normalized_host(s["url"]):s for s in existing}; by_name={s["name"]:s for s in existing}
-    changed=tag_existing_sources(existing)
+    # The network fetch (up to 12 MOFAGA directory pages) happens before the lock is taken, so a
+    # slow bootstrap import doesn't hold sources.json/watchlists.json reserved -- and hold up an
+    # admin adding/editing a source through the dashboard in the meantime -- for that whole span.
     imported, errors=official_directory_sources(province_code)
-    for source in imported:
-        if storage.normalized_host(source["url"]) not in by_host and source["name"] not in by_name:
-            existing.append(source); by_host[storage.normalized_host(source["url"])]=source; by_name[source["name"]]=source
-            changed=True
-    if changed: storage.save_sources(existing)
-    return {"province":PROVINCES[province_code],"sources":len(existing),"imported":len(imported),"directory_errors":errors,"file":str(SOURCES)}
+    with storage.REGISTRY_WRITE_LOCK:
+        existing=storage.sources(); by_host={storage.normalized_host(s["url"]):s for s in existing}; by_name={s["name"]:s for s in existing}
+        changed=tag_existing_sources(existing)
+        for source in imported:
+            if storage.normalized_host(source["url"]) not in by_host and source["name"] not in by_name:
+                existing.append(source); by_host[storage.normalized_host(source["url"])]=source; by_name[source["name"]]=source
+                changed=True
+        if changed: storage.save_sources(existing)
+        total=len(existing)
+    return {"province":PROVINCES[province_code],"sources":total,"imported":len(imported),"directory_errors":errors,"file":str(SOURCES)}
 
 
 def bootstrap_sudurpashchim(): return bootstrap_province("7")

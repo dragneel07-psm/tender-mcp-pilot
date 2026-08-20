@@ -158,8 +158,9 @@ class SourcesEndpointTests(ApiTestBase):
 class NoticesEndpointTests(ApiTestBase):
     def _seed_notice(self, notice_id="a"*64, source_id="src-1"):
         db = storage.conn()
-        db.execute("insert into notices values (?,?,?,?,?,?,?,?,?,?)",
-                   (notice_id, source_id, "Authority", "A tender notice", "https://x/1", "2026-01-01T00:00:00+00:00", 1, "A tender notice", None, None))
+        db.execute("""insert into notices (id,source_id,authority,title,url,discovered_at,relevant,raw_text)
+                   values (?,?,?,?,?,?,?,?)""",
+                   (notice_id, source_id, "Authority", "A tender notice", "https://x/1", "2026-01-01T00:00:00+00:00", 1, "A tender notice"))
         db.commit(); db.close()
 
     def test_list_notices_returns_seeded_row(self):

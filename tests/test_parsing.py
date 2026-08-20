@@ -93,6 +93,51 @@ class PublishedDateTests(unittest.TestCase):
         self.assertIsNone(parsing.published_date(body, "/notice/1", "Road tender"))
 
 
+class ContextSnippetTests(unittest.TestCase):
+    def test_returns_text_around_the_href(self):
+        body = "before text " + "x"*10 + '<a href="/n/1">Tender</a> published nearby' + "y"*10 + " after"
+        snippet = parsing.context_snippet(body, "/n/1")
+        self.assertIn("published nearby", snippet)
+
+    def test_returns_empty_string_when_href_not_found(self):
+        self.assertEqual(parsing.context_snippet("no links in here", "/missing"), "")
+
+
+class ClassifyNoticeTypeTests(unittest.TestCase):
+    def test_default_is_tender_notice(self):
+        self.assertEqual(parsing.classify_notice_type("Road construction bolpatra notice"), "tender_notice")
+
+    def test_detects_cancellation_english(self):
+        self.assertEqual(parsing.classify_notice_type("Notice: tender cancelled"), "cancellation")
+
+    def test_detects_cancellation_nepali(self):
+        self.assertEqual(parsing.classify_notice_type("बोलपत्र रद्द गरिएको सूचना"), "cancellation")
+
+    def test_detects_award_english(self):
+        self.assertEqual(parsing.classify_notice_type("Contract awarded to XYZ Construction"), "award")
+
+    def test_detects_award_nepali(self):
+        self.assertEqual(parsing.classify_notice_type("बोलपत्र स्वीकृत गर्ने सम्बन्धी सूचना"), "award")
+
+    def test_detects_corrigendum(self):
+        self.assertEqual(parsing.classify_notice_type("Corrigendum to tender notice 2026/01"), "corrigendum")
+
+    def test_cancellation_takes_priority_over_corrigendum_when_both_present(self):
+        self.assertEqual(parsing.classify_notice_type("Corrigendum: tender cancelled"), "cancellation")
+
+
+class StatusForNoticeTypeTests(unittest.TestCase):
+    def test_cancellation_maps_to_cancelled(self):
+        self.assertEqual(parsing.status_for_notice_type("cancellation"), "cancelled")
+
+    def test_award_maps_to_awarded(self):
+        self.assertEqual(parsing.status_for_notice_type("award"), "awarded")
+
+    def test_default_is_active(self):
+        self.assertEqual(parsing.status_for_notice_type("tender_notice"), "active")
+        self.assertEqual(parsing.status_for_notice_type("corrigendum"), "active")
+
+
 class RelevantTests(unittest.TestCase):
     def test_matches_default_tender_word(self):
         self.assertTrue(parsing.relevant("Bolpatra Aahwaan for road construction", {}))
