@@ -47,6 +47,9 @@ The Railway service runs the collector, database, source registry, dashboard, an
    COLLECTOR_WORKERS=40
    SOURCE_FAILURE_SKIP_THRESHOLD=5
    SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES=360
+   NOTICE_PAGE_LOOKUP_LIMIT=15
+   NOTICE_PAGE_LOOKUP_WORKERS=5
+   NOTICE_PAGE_LOOKUP_TIMEOUT_SECONDS=15
    REQUIRE_AUTH=1
    APP_USERNAME=your-company-login-name
    APP_PASSWORD=a-long-unique-password
@@ -64,6 +67,14 @@ The Railway service runs the collector, database, source registry, dashboard, an
    row are skipped on later scheduled sweeps until `SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES` has
    passed, so chronically dead sites stop slowing down every cycle. The dashboard's "Sources
    failing" tile and each source's fetch-failure badge surface this without needing log access.
+
+   When a source's listing page doesn't show a notice's date, the collector checks that notice's
+   own page for one. `NOTICE_PAGE_LOOKUP_LIMIT` caps how many such lookups one source attempts per
+   cycle, `NOTICE_PAGE_LOOKUP_WORKERS` runs that many at once, and `NOTICE_PAGE_LOOKUP_TIMEOUT_SECONDS`
+   bounds each one with no retries — without these, a single source with many undated notices (or a
+   few slow/dead notice pages) could serially stall an entire collection cycle by tens of minutes.
+   A notice that misses its lookup this cycle just keeps its "collected" date instead of a
+   "published" date; it isn't lost.
 
 4. Open the Railway service's public domain. The browser requests the configured company username and password before it can read or change monitoring data.
 

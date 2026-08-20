@@ -182,10 +182,10 @@ def validate_source(payload, current=None):
         except ValueError as exc:
             if "private or local" in str(exc): raise
     return {"id": current["id"] if current else source_id(name), "name":name, "url":url, "notice_url":notice_url, "keywords":keywords, "favorite":bool(favorite), "province":province or "National / other"}
-def fetch(url):
+def fetch(url, timeout=None, retries=None):
     req=urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept-Language":"en,ne;q=0.8"})
-    timeout = int(os.getenv("SOURCE_TIMEOUT_SECONDS", "45"))
-    retries = max(1, int(os.getenv("SOURCE_RETRIES", "2")))
+    timeout = int(os.getenv("SOURCE_TIMEOUT_SECONDS", "45")) if timeout is None else timeout
+    retries = max(1, int(os.getenv("SOURCE_RETRIES", "2"))) if retries is None else max(1, retries)
     last_error = None
     for attempt in range(retries):
         try:
@@ -219,10 +219,16 @@ def published_date(body, href, title):
         if date: return date
     return None
 def linked_notice_date(url):
-    """Check an individual HTML notice page when the listing itself has no date."""
+    """Check an individual HTML notice page when the listing itself has no date.
+    Best-effort and deliberately cheap: a short timeout and a single attempt (no retries), since a
+    source can have many such notices and this used to run one at a time with the full
+    SOURCE_TIMEOUT_SECONDS*SOURCE_RETRIES budget each -- a handful of slow/dead notice pages on one
+    source could stall an entire collection cycle by tens of minutes. See collect_one, which also
+    caps and parallelizes these lookups per source."""
     if url.lower().split("?",1)[0].endswith(".pdf"): return None
     try:
-        page=fetch(url)
+        timeout=int(os.getenv("NOTICE_PAGE_LOOKUP_TIMEOUT_SECONDS", "15"))
+        page=fetch(url, timeout=timeout, retries=1)
         return first_date(clean(re.sub(r"<[^>]+>", " ", page)))
     except (urllib.error.URLError, TimeoutError, ValueError):
         return None
@@ -297,10 +303,21 @@ def collect_one(source):
             url=urllib.parse.urljoin(source["notice_url"], href)
             if len(title) < 8 or not relevant(title + " " + url, source): continue
             published=published_date(body, href, title)
-            if not published and os.getenv("NOTICE_PAGE_DATE_LOOKUPS", "1") == "1":
-                published=linked_notice_date(url)  # network call; deliberately outside the write lock below
             digest=hashlib.sha256((source["id"]+url+title).encode()).hexdigest()
             candidates.append({"id":digest, "authority":source["name"], "title":title, "url":url, "published":published})
+        # Notices with no date on the listing page get a supplementary per-notice-page lookup.
+        # This used to run one notice at a time with the full network-fetch retry budget each, so a
+        # source with many such notices (or several slow/dead notice pages) could stall an entire
+        # collection cycle by tens of minutes on its own. Cap how many are attempted per cycle and
+        # run them a few at a time; any left over simply keep their "collected" date this cycle
+        # instead of a "published" date -- a cosmetic fallback, not a correctness issue.
+        if os.getenv("NOTICE_PAGE_DATE_LOOKUPS", "1") == "1":
+            needs_lookup=[c for c in candidates if not c["published"]][:max(0, int(os.getenv("NOTICE_PAGE_LOOKUP_LIMIT", "15")))]
+            if needs_lookup:
+                lookup_workers=min(len(needs_lookup), max(1, int(os.getenv("NOTICE_PAGE_LOOKUP_WORKERS", "5"))))
+                with ThreadPoolExecutor(max_workers=lookup_workers) as pool:
+                    for c, published in zip(needs_lookup, pool.map(lambda c: linked_notice_date(c["url"]), needs_lookup)):
+                        c["published"]=published
         # All the (fast, no-network) database writes for this source happen in one locked section,
         # so 40+ concurrent collector threads serialize on writes without racing SQLite's own locking.
         added=0; new_notices=[]

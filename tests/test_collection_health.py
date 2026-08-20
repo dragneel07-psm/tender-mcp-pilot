@@ -1,5 +1,7 @@
 import os
 import tempfile
+import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -77,6 +79,50 @@ class CollectionHealthTests(unittest.TestCase):
         total = db.execute("select count(*) from notices").fetchone()[0]
         db.close()
         self.assertEqual(total, 60)  # each source's notice has a distinct digest (source id is part of it)
+
+    def test_per_notice_lookups_are_capped(self):
+        """Regression test: one source with many notices lacking a listing-page date used to run a
+        per-notice-page lookup for every single one, serially, each with the full network retry
+        budget -- a handful of slow notice pages could stall a whole collection cycle for tens of
+        minutes. Only NOTICE_PAGE_LOOKUP_LIMIT of them should be attempted per cycle."""
+        os.environ["NOTICE_PAGE_LOOKUP_LIMIT"] = "5"
+        try:
+            links = "".join(f'<a href="/notices/{i}">Tender bolpatra notice {i}</a>' for i in range(20))
+            call_log = []
+            def fake_fetch(url, timeout=None, retries=None):
+                call_log.append(url)
+                if url == "https://example.gov.np/notices": return links
+                return "<html>no date on this page</html>"
+            with mock.patch.object(app, "fetch", side_effect=fake_fetch):
+                result = app.collect_one(self.source())
+            self.assertEqual(result["status"], "ok")
+            per_notice_calls = [c for c in call_log if c != "https://example.gov.np/notices"]
+            self.assertLessEqual(len(per_notice_calls), 5)
+        finally:
+            os.environ.pop("NOTICE_PAGE_LOOKUP_LIMIT", None)
+
+    def test_per_notice_lookups_run_concurrently(self):
+        # Track how many lookups are ever in flight at once, rather than asserting on wall-clock
+        # time (flaky under thread-scheduling jitter) -- directly proves the lookups overlap.
+        os.environ["NOTICE_PAGE_LOOKUP_LIMIT"] = "10"
+        os.environ["NOTICE_PAGE_LOOKUP_WORKERS"] = "5"
+        try:
+            links = "".join(f'<a href="/notices/{i}">Tender bolpatra notice {i}</a>' for i in range(10))
+            lock = threading.Lock(); state = {"current": 0, "max": 0}
+            def fake_fetch(url, timeout=None, retries=None):
+                if url == "https://example.gov.np/notices": return links
+                with lock:
+                    state["current"] += 1; state["max"] = max(state["max"], state["current"])
+                time.sleep(0.05)
+                with lock: state["current"] -= 1
+                return "<html>no date on this page</html>"
+            with mock.patch.object(app, "fetch", side_effect=fake_fetch):
+                result = app.collect_one(self.source())
+            self.assertEqual(result["status"], "ok")
+            self.assertGreater(state["max"], 1, "lookups ran one at a time instead of overlapping")
+        finally:
+            os.environ.pop("NOTICE_PAGE_LOOKUP_LIMIT", None)
+            os.environ.pop("NOTICE_PAGE_LOOKUP_WORKERS", None)
 
     def test_manual_single_source_collect_ignores_skip(self):
         src = self.source()
