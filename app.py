@@ -67,6 +67,9 @@ class OfficialDirectoryParser(HTMLParser):
 # (this happened in production once COLLECTOR_WORKERS was raised). Funnel every write through this
 # lock instead of relying solely on busy_timeout, so writers queue in-process rather than erroring.
 DB_WRITE_LOCK = threading.Lock()
+# Reassigned wholesale (not mutated in place) by the scheduler thread after each cycle; dict
+# reassignment is a single atomic bytecode op under the GIL, so this needs no separate lock.
+last_cycle = {"phase":"not started yet","started_at":None,"finished_at":None,"duration_seconds":None,"counts":{}}
 
 def conn():
     db = sqlite3.connect(DB, timeout=20)
@@ -445,17 +448,11 @@ class Api(BaseHTTPRequestHandler):
         if path == "/" or re.fullmatch(r"/source/[a-z0-9-]+", path):
             data=(ROOT / "dashboard.html").read_bytes()
             self.send_response(200); self.security_headers(); self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data); return
-        if path == "/":
-            page = """<!doctype html><html><head><meta charset='utf-8'><title>Tender Monitor</title>
-<style>body{font-family:system-ui,sans-serif;background:#f4f7fb;color:#14213d;margin:0}main{max-width:920px;margin:48px auto;padding:0 20px}h1{margin-bottom:4px}.sub{color:#586174}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:22px 0}.source{background:white;border:1px solid #dde4ee;border-radius:12px;padding:16px;text-align:left;position:relative;color:#14213d}.source.active{outline:3px solid #8dc8ff}.badge{background:#c82929;border-radius:99px;color:white;font-size:.75rem;padding:4px 7px;position:absolute;right:12px;top:12px}.card{background:white;border:1px solid #dde4ee;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 2px 7px #15233a0d}.meta{color:#586174;font-size:.9rem;margin:8px 0}a{color:#075cb5;text-decoration:none}.empty{padding:24px;text-align:center;color:#586174}button{background:#075cb5;border:0;border-radius:7px;color:white;padding:9px 13px;font-weight:600;cursor:pointer}.source{cursor:pointer}.count{color:#586174;font-size:.85rem;margin-top:10px}.notice-actions{margin-top:12px;display:flex;gap:14px;align-items:center}.read{background:#e8eef5;color:#14213d}</style></head><body><main>
-<h1>Sudurpashchim Tender Monitor</h1><p class='sub'>Choose a local government to view its official procurement notices.</p><button onclick='load()'>Refresh notices</button><section id='alert' class='card'></section><section id='sources' class='grid'></section><h2 id='heading'>All notices</h2><section id='list' class='empty'>Loading notices…</section>
-<script>let selected='';async function load(){try{const [sourceResponse,noticeResponse,alertResponse]=await Promise.all([fetch('/sources'),fetch('/notices?limit=50'+(selected?'&source='+encodeURIComponent(selected):'')),fetch('/alerts/status')]);const sources=await sourceResponse.json(),items=await noticeResponse.json(),alerts=await alertResponse.json();document.getElementById('alert').innerHTML=`<strong>WhatsApp alerts: ${alerts.configured?'ready':'setup required'}</strong><div class="meta">${alerts.configured?'New tenders will be sent automatically.':'Add your private WhatsApp Business settings to .env, then restart the server.'}</div>${alerts.deliveries.length?'<div class="meta">Recent delivery: '+alerts.deliveries[0].status+'</div>':''}`;document.getElementById('sources').innerHTML=sources.map(s=>`<button class="source ${s.id===selected?'active':''}" onclick="choose('${s.id}','${s.name.replace(/'/g,"\\'")}')"><strong>${s.name}</strong>${s.unread_count?`<span class="badge">${s.unread_count} unread</span>`:''}<div class="count">${s.notice_count} stored notices${s.new_count?' · '+s.new_count+' today':''}</div></button>`).join('');const box=document.getElementById('list');if(!items.length){box.className='empty';box.textContent='No notices have been collected for this local government yet.';return}box.className='';box.innerHTML=items.map(n=>`<article class="card"><strong>${n.title}</strong><div class="meta">${n.authority} · ${n.seen_at?'read':'unread'} · collected ${new Date(n.discovered_at).toLocaleString()}</div><div class="notice-actions"><a href="${n.url}" target="_blank" rel="noopener">Open the original official notice →</a>${n.seen_at?'':`<button class="read" onclick="markRead('${n.id}')">Mark as read</button>`}</div></article>`).join('')}catch(e){document.getElementById('list').textContent='The service is unavailable. Keep the server terminal running and refresh.'}}async function choose(id,name){selected=id;document.getElementById('heading').textContent=name+' notices';load()}async function markRead(id){await fetch('/notices/'+encodeURIComponent(id)+'/mark-seen',{method:'POST'});load()}load()</script>
-</main></body></html>"""
-            data=page.encode(); self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data); return
         if path == "/health": return self.respond({"status":"ok"})
         if path == "/sources": return self.respond(source_summary())
         if path == "/watchlists": return self.respond(watchlists())
         if path == "/alerts/status": return self.respond(alert_summary())
+        if path == "/collection/status": return self.respond(last_cycle)
         if path == "/notices": return self.respond(list_notices(params.get("query",[""])[0], int(params.get("limit",[50])[0]), params.get("source",[""])[0]))
         if path.startswith("/notices/"):
             record=details(path.rsplit("/",1)[1]); return self.respond(record or {"error":"not found"}, 200 if record else 404)
@@ -534,7 +531,10 @@ def serve():
         # already isolates per-source failures, but this try/except is a last-resort safety net so
         # nothing (collect_all's own bookkeeping, an unforeseen bug) can silently kill the thread and
         # leave the app looking healthy (server still answers /health) while collection has stopped.
+        global last_cycle
         while True:
+            started_at=datetime.now(timezone.utc).isoformat()
+            last_cycle={"phase":"running","started_at":started_at,"finished_at":None,"duration_seconds":None,"counts":{}}
             try:
                 started=time.monotonic()
                 print("Automatic collection started", flush=True)
@@ -544,8 +544,10 @@ def serve():
                     counts[result["status"]]=counts.get(result["status"],0)+1
                     if result["status"]=="error": print(json.dumps(result, ensure_ascii=False), flush=True)
                 elapsed=round(time.monotonic()-started,1)
+                last_cycle={"phase":"idle","started_at":started_at,"finished_at":datetime.now(timezone.utc).isoformat(),"duration_seconds":elapsed,"counts":counts}
                 print(f"Automatic collection finished in {elapsed}s: {json.dumps(counts, ensure_ascii=False)}", flush=True)
             except Exception as exc:
+                last_cycle={"phase":"crashed","started_at":started_at,"finished_at":datetime.now(timezone.utc).isoformat(),"duration_seconds":None,"counts":{},"error":str(exc)}
                 print(f"Automatic collection cycle crashed, will retry next cycle: {exc}", flush=True)
             time.sleep(max(interval_minutes, 5) * 60)
     threading.Thread(target=scheduled_collection, daemon=True).start()
