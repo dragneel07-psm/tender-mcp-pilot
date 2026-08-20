@@ -49,6 +49,11 @@ class Api(BaseHTTPRequestHandler):
         if path == "/alerts/status": return self.respond(queries.alert_summary())
         if path == "/collection/status": return self.respond(status.last_cycle)
         if path == "/notices": return self.respond(queries.list_notices(params.get("query",[""])[0], int(params.get("limit",[50])[0]), params.get("source",[""])[0]))
+        documents_match=re.fullmatch(r"/notices/([a-f0-9]{64})/documents", path)
+        if documents_match:
+            record=queries.details(documents_match.group(1))
+            if not record: return self.respond({"error":"not found"},404)
+            return self.respond(queries.notice_documents(documents_match.group(1)))
         if path.startswith("/notices/"):
             record=queries.details(path.rsplit("/",1)[1]); return self.respond(record or {"error":"not found"}, 200 if record else 404)
         self.respond({"error":"not found"},404)

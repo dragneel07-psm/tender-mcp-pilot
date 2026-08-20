@@ -1,1 +1,5 @@
-# This project uses only Python's standard library.
+# Milestone 3 (document intelligence) needs a PDF text extractor. pypdf is pure Python -- no
+# system libraries (no poppler, no tesseract) -- so it installs cleanly on Railway's Nixpacks
+# build with zero extra config. Pinned to an exact version for a reproducible build; see
+# CHANGELOG.md for why OCR (e.g. pytesseract) was deliberately not added in this milestone.
+pypdf==6.16.1

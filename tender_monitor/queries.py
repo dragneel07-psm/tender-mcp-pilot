@@ -43,3 +43,9 @@ def alert_summary():
 
 def details(notice_id):
     db=storage.conn(); row=db.execute("select * from notices where id=?",(notice_id,)).fetchone(); db.close(); return dict(row) if row else None
+
+
+def notice_documents(notice_id):
+    db=storage.conn()
+    rows=[dict(r) for r in db.execute("select * from documents where notice_id=? order by discovered_at desc", (notice_id,))]
+    db.close(); return rows

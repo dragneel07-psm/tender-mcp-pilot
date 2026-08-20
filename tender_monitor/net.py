@@ -1,12 +1,28 @@
 """Outbound HTTP fetching. The only module that talks to arbitrary external URLs."""
+import ipaddress
 import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from . import parsing
 from .config import USER_AGENT
+
+
+def is_safe_public_url(url):
+    """SSRF guard: same rule storage.validate_source applies to a source's own URLs, reused here
+    for document links discovered *within* a source's pages -- those are attacker-influenced (a
+    compromised or malicious source could link to an internal address) exactly like a source URL
+    is, so they need the same check before documents.py ever fetches one."""
+    host=urllib.parse.urlparse(url).hostname
+    if not host or host.lower() in ("localhost", "localhost.localdomain") or host.lower().endswith(".local"):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True  # not a literal IP (a normal hostname) -- DNS resolution isn't re-checked here
 
 
 def fetch(url, timeout=None, retries=None):

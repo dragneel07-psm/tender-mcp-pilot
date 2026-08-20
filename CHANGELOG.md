@@ -1,5 +1,41 @@
 # Changelog
 
+## Milestone 3 — Document intelligence
+
+- First new dependency of the project: `pypdf==6.16.1` (pure Python, no system libraries --
+  installs cleanly on Railway's Nixpacks build with zero extra config). OCR was deliberately not
+  added: no evidence yet of a scanned-document rate that would justify the added system
+  dependency (tesseract); a PDF that yields no text is recorded as `empty_text_likely_scanned`
+  rather than guessed at.
+- New `tender_monitor/documents.py`: discovers `.pdf` links, downloads them SSRF-checked (shared
+  guard in `net.is_safe_public_url`), size-capped (streamed, aborts mid-download rather than
+  reading an oversized body into memory first), and magic-byte-verified (`%PDF-`) before ever
+  handing bytes to the parser. Never raises -- every outcome, including failure, is a typed
+  `extraction_status`. No raw PDF bytes are persisted, only extracted text (capped) + metadata.
+- New `documents` table (additive migration, same `SCHEMA_MIGRATION_LOCK` pattern as Milestone 2)
+  and a `submission_deadline` column on `notices`, populated only when a date appears near an
+  explicit deadline keyword in extracted text -- not just any date in the document (never
+  fabricate). Deliberately NOT extracting `estimated_amount`/`bid_security_amount`/`eligibility`
+  this milestone: a document typically states several monetary figures, and attributing the right
+  one via regex without real NLP is unreliable enough that a wrong-but-confident number would be
+  worse than none. Deferred to Milestone 10 (AI) or a dedicated pass.
+- Wired into `collector.collect_one`: document discovery only runs for genuinely new notices
+  (never re-processes a notice's documents on a later re-encounter), gated by
+  `DOCUMENT_PROCESSING_ENABLED` (off by default) and bounded by `DOCUMENT_DOWNLOAD_LIMIT`/
+  `_WORKERS`/`_MAX_SIZE_BYTES`/`_TIMEOUT_SECONDS` so a burst of new notices on one source can't
+  blow up that cycle's duration -- the ~9-minute cycle time from Milestone 1's fixes was hard-won
+  and this milestone is designed not to spend it without an explicit opt-in.
+- New `GET /notices/{id}/documents` endpoint.
+- Test suite: 99 → 113. New `tests/test_documents.py` (SSRF rejection, size-cap rejection,
+  magic-byte rejection, corrupt-PDF handling -- none touch a real network, all mock
+  `urllib.request.urlopen` directly) plus collector-level and migration-level coverage of the
+  new wiring.
+- **Shipped with `DOCUMENT_PROCESSING_ENABLED=0`** (the .env.example/README default) even though
+  the code is deployed: a new dependency, a schema migration, and a new download pipeline landing
+  together is enough compounded risk for one deploy. Turning it on live (real PDF downloads across
+  every configured source) is a deliberate, separate follow-up via a Railway variable, not
+  something this milestone unilaterally enables.
+
 ## Milestone 2 — Normalized tender schema + adapter interface
 
 - Added `tender_monitor/adapters.py`: a `BaseTenderSource` ABC (`discover_notices`,

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from tender_monitor import collector, net, queries, storage
+from tender_monitor import collector, documents, net, queries, storage
 
 
 class CollectionHealthTests(unittest.TestCase):
@@ -211,6 +211,38 @@ class CollectionHealthTests(unittest.TestCase):
         self.assertEqual(result["new"], 0)  # already stored; "insert or ignore" adds nothing new
         notices = queries.list_notices(source_id="test-source")
         self.assertEqual(len(notices), 1)
+
+    def test_document_processing_is_off_by_default(self):
+        html = '<a href="/n/1">Road construction bolpatra notice</a>'
+        with mock.patch.object(net, "fetch", return_value=html), \
+             mock.patch.object(documents, "download_and_extract") as extract_mock:
+            collector.collect_one(self.source())
+        extract_mock.assert_not_called()
+
+    def test_document_processing_wires_documents_table_and_deadline_when_enabled(self):
+        os.environ["DOCUMENT_PROCESSING_ENABLED"] = "1"
+        try:
+            listing_html = '<a href="/n/1">Road construction bolpatra notice</a>'
+            notice_page_html = '<a href="/docs/notice.pdf">Tender Notice</a>'
+            def fake_fetch(url, timeout=None, retries=None):
+                if url == "https://example.gov.np/notices": return listing_html
+                return notice_page_html
+            fake_doc = {"url": "https://example.gov.np/docs/notice.pdf", "sha256": "abc123",
+                        "size_bytes": 100, "content_type": "application/pdf",
+                        "extracted_text": "Please note the submission deadline: 2026-09-15 for this tender.",
+                        "extraction_status": "ok"}
+            with mock.patch.object(net, "fetch", side_effect=fake_fetch), \
+                 mock.patch.object(documents, "download_and_extract", return_value=dict(fake_doc)):
+                result = collector.collect_one(self.source())
+            self.assertEqual(result["status"], "ok")
+            notice = queries.list_notices(source_id="test-source")[0]
+            self.assertEqual(notice["submission_deadline"], "2026-09-15")
+            docs = queries.notice_documents(notice["id"])
+            self.assertEqual(len(docs), 1)
+            self.assertEqual(docs[0]["extraction_status"], "ok")
+            self.assertEqual(docs[0]["document_type"], "tender_notice")
+        finally:
+            os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
 
     def test_manual_single_source_collect_ignores_skip(self):
         src = self.source()

@@ -99,6 +99,21 @@ class MigrationFromOldSchemaTests(unittest.TestCase):
         db.close()
         self.assertEqual(row["published_at"], "2026-01-01")
 
+    def test_documents_table_and_submission_deadline_column_exist_after_migration(self):
+        """Milestone 3 additions to an old-shape database: a new documents table, and a
+        submission_deadline column on notices (not backfilled -- see NOTICES_MIGRATION_COLUMNS)."""
+        db = storage.conn()
+        columns = {row[1] for row in db.execute("pragma table_info(notices)")}
+        self.assertIn("submission_deadline", columns)
+        row = db.execute("select submission_deadline from notices where id='n1'").fetchone()
+        self.assertIsNone(row["submission_deadline"])
+        db.execute("insert into documents (id,notice_id,url,extraction_status,discovered_at) values (?,?,?,?,?)",
+                   ("d1", "n1", "https://x/doc.pdf", "ok", "2026-01-01T00:00:00+00:00"))
+        db.commit()
+        count = db.execute("select count(*) from documents").fetchone()[0]
+        db.close()
+        self.assertEqual(count, 1)
+
     def test_migration_runs_exactly_once_not_on_every_connection(self):
         db1 = storage.conn()
         db1.execute("update notices set organization = 'manually edited' where id='n1'")

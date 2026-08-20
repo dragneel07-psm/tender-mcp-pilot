@@ -1,10 +1,32 @@
 """The collection pipeline: collect_one fetches and stores one source's notices; collect_all
 orchestrates a full sweep across every source (skip/cooldown-aware, concurrent)."""
+import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from . import adapters, alerts, health, storage
+from . import adapters, alerts, documents, health, net, storage
+
+
+def _discover_notice_documents(notice):
+    """Find and download this notice's PDF document(s). Best-effort: never raises -- a document
+    failure must not affect the notice, which is already inserted by the time this runs."""
+    try:
+        url = notice["url"]
+        if url.lower().split("?", 1)[0].endswith(".pdf"):
+            links = [(url, notice["title"])]
+        else:
+            timeout = int(os.getenv("DOCUMENT_DOWNLOAD_TIMEOUT_SECONDS", "20"))
+            page = net.fetch(url, timeout=timeout, retries=1)
+            links = documents.discover_pdf_links(page, url)
+        results = []
+        for link_url, link_text in links[:3]:  # cap documents per notice, independent of the per-source cap below
+            extracted = documents.download_and_extract(link_url)
+            extracted["document_type"] = documents.classify_document_type(link_text)
+            results.append(extracted)
+        return results
+    except Exception:
+        return []
 
 
 def collect_one(source):
@@ -51,6 +73,35 @@ def collect_one(source):
                 try:
                     db.execute("insert into deliveries values (?,?,?,?)", (notice["id"], now, status, detail)); db.commit()
                 finally: db.close()
+        # Milestone 3, off by default (DOCUMENT_PROCESSING_ENABLED) and bounded even when on: only
+        # genuinely new notices this cycle get document discovery, and only up to
+        # DOCUMENT_DOWNLOAD_LIMIT of those, so a source with a burst of new notices (e.g. the first
+        # time it's added) can't blow up this cycle's duration. A notice only goes through this
+        # once in its life -- it's never "new" again once inserted.
+        if new_notices and os.getenv("DOCUMENT_PROCESSING_ENABLED", "0") == "1":
+            doc_limit=max(0, int(os.getenv("DOCUMENT_DOWNLOAD_LIMIT", "3")))
+            to_process=new_notices[:doc_limit]
+            if to_process:
+                doc_workers=min(len(to_process), max(1, int(os.getenv("DOCUMENT_DOWNLOAD_WORKERS", "3"))))
+                with ThreadPoolExecutor(max_workers=doc_workers) as pool:
+                    doc_results=list(pool.map(_discover_notice_documents, to_process))
+                with storage.DB_WRITE_LOCK:
+                    db=storage.conn()
+                    try:
+                        for notice, docs in zip(to_process, doc_results):
+                            for doc in docs:
+                                doc_id=hashlib.sha256((notice["id"]+doc["url"]).encode()).hexdigest()
+                                db.execute("""insert or ignore into documents
+                                    (id,notice_id,url,sha256,size_bytes,content_type,document_type,extracted_text,extraction_status,discovered_at)
+                                    values (?,?,?,?,?,?,?,?,?,?)""",
+                                    (doc_id,notice["id"],doc["url"],doc["sha256"],doc["size_bytes"],doc["content_type"],
+                                     doc["document_type"],doc["extracted_text"],doc["extraction_status"],now))
+                                if doc["extracted_text"]:
+                                    deadline=documents.extract_submission_deadline(doc["extracted_text"])
+                                    if deadline:
+                                        db.execute("update notices set submission_deadline=coalesce(submission_deadline,?) where id=?", (deadline,notice["id"]))
+                        db.commit()
+                    finally: db.close()
         return {"source":source["name"],"status":"ok","new":added}
     except Exception as exc:
         try:

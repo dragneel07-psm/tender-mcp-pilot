@@ -41,6 +41,9 @@ NOTICES_MIGRATION_COLUMNS = (
     ("notice_type", "text"), ("status", "text"),
     ("first_seen", "text"), ("last_seen", "text"),
     ("content_hash", "text"), ("confidence_score", "real"),
+    # Milestone 3: not backfilled -- deriving it for old rows means re-fetching and re-parsing
+    # every document they ever linked to, out of scope for a schema migration step.
+    ("submission_deadline", "text"),
 )
 BACKFILLABLE_COLUMNS = ("organization", "province", "notice_type", "status", "first_seen", "last_seen")
 
@@ -63,6 +66,13 @@ def conn():
     db.execute("""create table if not exists source_health (
         source_id text primary key, last_status text, last_detail text,
         last_run_at text, last_success_at text, consecutive_failures integer not null default 0
+    )""")
+    # Milestone 3: discovered documents (PDF only today). No raw bytes stored -- text + metadata
+    # only, capped in length (see documents.py) -- to avoid unbounded volume growth.
+    db.execute("""create table if not exists documents (
+        id text primary key, notice_id text not null, url text not null, sha256 text,
+        size_bytes integer, content_type text, document_type text, extracted_text text,
+        extraction_status text not null, discovered_at text not null
     )""")
     return db
 
