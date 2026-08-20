@@ -155,5 +155,60 @@ class RelevantTests(unittest.TestCase):
         self.assertFalse(parsing.relevant("Holiday notice for staff", {"keywords": []}))
 
 
+class ToCalendarDateTests(unittest.TestCase):
+    def _near_future_iso(self, days):
+        from datetime import date, timedelta
+        return (date.today() + timedelta(days=days)).isoformat()
+
+    def test_none_and_empty_input(self):
+        self.assertIsNone(parsing.to_calendar_date(None))
+        self.assertIsNone(parsing.to_calendar_date(""))
+
+    def test_iso_format(self):
+        from datetime import date
+        text = self._near_future_iso(10)
+        self.assertEqual(parsing.to_calendar_date(text), date.fromisoformat(text))
+
+    def test_slash_iso_format(self):
+        from datetime import date
+        text = self._near_future_iso(10).replace("-", "/")
+        self.assertEqual(parsing.to_calendar_date(text), date.fromisoformat(self._near_future_iso(10)))
+
+    def test_day_first_numeric_format(self):
+        from datetime import date, timedelta
+        target = date.today() + timedelta(days=20)
+        text = f"{target.day:02d}/{target.month:02d}/{target.year}"
+        self.assertEqual(parsing.to_calendar_date(text), target)
+
+    def test_month_name_first_format(self):
+        from datetime import date, timedelta
+        target = date.today() + timedelta(days=15)
+        text = f"{target.strftime('%b')} {target.day}, {target.year}"
+        self.assertEqual(parsing.to_calendar_date(text), target)
+
+    def test_day_first_month_name_format(self):
+        from datetime import date, timedelta
+        target = date.today() + timedelta(days=15)
+        text = f"{target.day} {target.strftime('%b')} {target.year}"
+        self.assertEqual(parsing.to_calendar_date(text), target)
+
+    def test_garbage_text_returns_none(self):
+        self.assertIsNone(parsing.to_calendar_date("not a date at all"))
+
+    def test_devanagari_digit_date_is_never_trusted(self):
+        # Deliberately not parsed -- see the module docstring's BS/Gregorian caveat.
+        self.assertIsNone(parsing.to_calendar_date("२०८२/०५/०१"))
+
+    def test_implausibly_far_future_date_is_rejected(self):
+        # ~57 years ahead -- exactly the class of value a misread Bikram Sambat year produces.
+        self.assertIsNone(parsing.to_calendar_date("2083-05-01"))
+
+    def test_implausibly_old_date_is_rejected(self):
+        self.assertIsNone(parsing.to_calendar_date("1990-01-01"))
+
+    def test_invalid_calendar_date_returns_none(self):
+        self.assertIsNone(parsing.to_calendar_date("2026-13-40"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,7 +18,7 @@ class CollectionHealthTests(unittest.TestCase):
     # path, which fires an alert for every new notice. Without clearing these, that alert send is
     # NOT a mock: it is a real HTTPS call to Meta's Graph API with this project's real access token,
     # capable of delivering a real WhatsApp message with fabricated test content to the real
-    # configured recipient. Clearing them makes send_whatsapp_alert take its own designed
+    # configured recipient. Clearing them makes alerts.WhatsAppAlertProvider take its own designed
     # "not configured" no-op path (alerts.py) -- the same path production takes when unconfigured.
     WHATSAPP_KEYS = ("WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME")
 

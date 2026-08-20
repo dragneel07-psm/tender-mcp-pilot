@@ -117,7 +117,7 @@ def collect_one(source):
                 db.commit()
             finally: db.close()
         for notice in new_notices:
-            status, detail = alerts.send_whatsapp_alert(notice)  # network call; deliberately outside the write lock
+            status, detail = alerts.send_alert(notice, reason="new_notice")  # network call; deliberately outside the write lock
             with storage.DB_WRITE_LOCK:
                 db=storage.conn()
                 try:
@@ -125,12 +125,9 @@ def collect_one(source):
                                (notice["id"], now, status, detail, "new_notice")); db.commit()
                 finally: db.close()
         for notice, change_type in changed_notices:
-            # Same fixed 3-parameter WhatsApp template as a brand-new notice (a distinct template
-            # per change type is real Milestone 7 scope -- the AlertProvider abstraction). Prefixing
-            # the title (in this outbound copy only, never written back to the notices row) is the
-            # one honest way to hint at "this is an update" within that constraint.
-            alert_notice={**notice, "title": f"[{change_type.replace('_',' ')}] {notice['title']}"}
-            status, detail = alerts.send_whatsapp_alert(alert_notice)
+            # Milestone 7: alerts.send_alert now owns how a `reason` maps onto WhatsApp's fixed
+            # 3-parameter template (the title prefix) -- collector.py no longer needs to know that.
+            status, detail = alerts.send_alert(notice, reason=change_type)
             with storage.DB_WRITE_LOCK:
                 db=storage.conn()
                 try:

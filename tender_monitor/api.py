@@ -46,6 +46,11 @@ class Api(BaseHTTPRequestHandler):
         if path == "/health": return self.respond({"status":"ok"})
         if path == "/sources": return self.respond(queries.source_summary())
         if path == "/watchlists": return self.respond(storage.watchlists())
+        watchlist_notices_match=re.fullmatch(r"/watchlists/(wl-[a-f0-9]+)/notices", path)
+        if watchlist_notices_match:
+            result=queries.notices_for_watchlist(
+                watchlist_notices_match.group(1), params.get("limit",[50])[0], params.get("offset",[0])[0])
+            return self.respond(result if result is not None else {"error":"not found"}, 200 if result is not None else 404)
         if path == "/alerts/status": return self.respond(queries.alert_summary())
         if path == "/collection/status": return self.respond(status.last_cycle)
         if path == "/company-profiles": return self.respond(storage.company_profiles())

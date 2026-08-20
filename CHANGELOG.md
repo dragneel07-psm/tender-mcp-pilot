@@ -1,5 +1,48 @@
 # Changelog
 
+## Milestone 7 — Advanced watchlists + alert engine
+
+- **AlertProvider abstraction** (`alerts.py` rewrite): an `AlertProvider` ABC (`is_configured`,
+  `send(notice, reason)`) and `WhatsAppAlertProvider`, the only implementation today -- exactly
+  today's single approved 3-parameter template, now behind an interface. `alerts.send_alert(notice,
+  reason)` is the one call site collector.py and reminders.py use; neither knows WhatsApp's
+  template shape or field count. A `reason` other than `"new_notice"` (a notice_changes.change_type,
+  or `"deadline_reminder"`) is folded into the outbound title as a bracketed prefix inside the
+  provider -- collector.py no longer builds that prefix itself, and the notices row is never
+  mutated. `alerts.send_whatsapp_alert()` is retired; `cli.py`'s `test-whatsapp` command now
+  exercises `WhatsAppAlertProvider` directly (it's deliberately testing the concrete provider, not
+  the abstraction).
+- **Watchlists upgraded to full saved-search objects**: `validate_watchlist()` now accepts every
+  `list_notices()` filter (`query`, `province`, `notice_type`, `status`, `category`,
+  `discovered_after`, `discovered_before`, `has_documents`) alongside `source_ids`, not just a list
+  of source IDs. New `queries.notices_for_watchlist()` and `GET /watchlists/{id}/notices` run a
+  watchlist's saved filters through `list_notices()` (which gained a `source_ids` param -- an IN
+  clause, additive at the end of its signature so no existing positional caller shifts). The one
+  checked-in watchlist predating this milestone keeps working untouched: every reader defaults a
+  missing filter key to "no filter" rather than requiring a migration.
+- **Deadline-reminder scheduling** (new `reminders.py`): sends exactly one `deadline_reminder`
+  alert per notice whose `submission_deadline` falls within `DEADLINE_REMINDER_DAYS` (default 3)
+  days, excluding cancelled/awarded notices and any notice already reminded (checked against
+  `deliveries.reason`, no new table needed). Wired into `scheduler.py`'s existing collection loop,
+  isolated in its own try/except so a reminder-pass bug can't mark an otherwise-successful cycle
+  "crashed". New `parsing.to_calendar_date()` turns one of `first_date()`'s extracted strings into
+  a real `date` for the arithmetic this needs -- deliberately conservative: only unambiguous
+  numeric/month-name formats are attempted (never the Devanagari-digit pattern), and a parsed date
+  is discarded unless it falls in a plausible window around today. This guards against Nepali
+  government sites' routine use of the Bikram Sambat calendar (~56-57 years ahead of Gregorian,
+  with nothing in the source text marking which calendar a date uses) -- a BS date parsed as
+  Gregorian would land decades off and silently produce a nonsensical reminder schedule; the
+  plausibility bound is what catches that instead of trusting arithmetic it can't justify.
+  **Has no observable effect in production today**: `submission_deadline` is only ever populated
+  when `DOCUMENT_PROCESSING_ENABLED=1` (Milestone 3), which remains off by default and hasn't been
+  turned on live -- this ships inert until that prerequisite is enabled, same pattern Milestone 3
+  itself used.
+- Test suite: 147 → 177. New `tests/test_alerts.py` (provider dispatch, reason-prefix behavior,
+  unconfigured no-op path), `tests/test_reminders.py` (due/not-due edge cases, no-repeat sends),
+  and new `ToCalendarDateTests` in `tests/test_parsing.py` (all supported formats, garbage input,
+  Devanagari rejection, implausible-date rejection) plus new watchlist coverage in
+  `tests/test_api.py`.
+
 ## Milestone 6 — Tender change detection
 
 - Notices stop being effectively immutable (audit §6/§9): a re-scrape of an already-known notice

@@ -218,6 +218,50 @@ class WatchlistsAndCollectionStatusTests(ApiTestBase):
         status, _ = self.request("DELETE", f"/watchlists/{created['id']}")
         self.assertEqual(status, 200)
 
+    def _seed_notice(self, notice_id, source_id="src-1", title="Road construction bolpatra notice", province=None):
+        db = storage.conn()
+        db.execute("""insert into notices (id,source_id,authority,title,url,discovered_at,relevant,raw_text,province)
+                   values (?,?,?,?,?,?,?,?,?)""",
+                   (notice_id, source_id, "Authority", title, f"https://x/{notice_id}", "2026-01-01T00:00:00+00:00", 1, title, province))
+        db.commit(); db.close()
+
+    def test_watchlist_saves_full_saved_search_fields(self):
+        status, created = self.request("POST", "/watchlists", {"name": "IT tenders", "source_ids": [], "category": "Software", "province": "Bagmati"})
+        self.assertEqual(status, 201)
+        self.assertEqual(created["category"], "Software")
+        self.assertEqual(created["province"], "Bagmati")
+        self.assertEqual(created["query"], "")
+
+    def test_watchlist_notices_for_unknown_watchlist_is_404(self):
+        status, payload = self.request("GET", "/watchlists/wl-000000000000/notices")
+        self.assertEqual(status, 404)
+
+    def test_watchlist_notices_applies_saved_category_filter(self):
+        self._seed_notice("a"*64)
+        db = storage.conn()
+        db.execute("insert into notice_categories values (?,?,?)", ("a"*64, "Road", 0.6))
+        db.commit(); db.close()
+        status, created = self.request("POST", "/watchlists", {"name": "Road watch", "source_ids": [], "category": "Road"})
+        status, matched = self.request("GET", f"/watchlists/{created['id']}/notices")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(matched), 1)
+        status, empty = self.request("POST", "/watchlists", {"name": "Solar watch", "source_ids": [], "category": "Solar"})
+        status, unmatched = self.request("GET", f"/watchlists/{empty['id']}/notices")
+        self.assertEqual(unmatched, [])
+
+    def test_watchlist_notices_applies_saved_source_ids(self):
+        # validate_watchlist only keeps source_ids that are actually registered sources -- seed the
+        # registry directly (bypassing validate_source's URL requirements, same as _seed_notice
+        # bypasses collect_one) so this test can focus on the filter behavior.
+        storage.save_sources([{"id": "src-1", "name": "Source 1"}, {"id": "src-2", "name": "Source 2"}])
+        self._seed_notice("a"*64, source_id="src-1")
+        self._seed_notice("b"*64, source_id="src-2")
+        status, created = self.request("POST", "/watchlists", {"name": "Src1 only", "source_ids": ["src-1"]})
+        self.assertEqual(created["source_ids"], ["src-1"])
+        status, matched = self.request("GET", f"/watchlists/{created['id']}/notices")
+        self.assertEqual(status, 200)
+        self.assertEqual([n["id"] for n in matched], ["a"*64])
+
     def test_collection_status_endpoint_returns_a_phase(self):
         status, payload = self.request("GET", "/collection/status")
         self.assertEqual(status, 200)

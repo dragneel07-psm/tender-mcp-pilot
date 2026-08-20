@@ -1,6 +1,7 @@
 """HTML parsing and date/text extraction primitives. Pure functions/classes: no network, no I/O."""
 import html
 import re
+from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 
 from .config import TENDER_WORDS
@@ -58,6 +59,59 @@ def first_date(text):
         match=re.search(pattern, text, re.IGNORECASE)
         if match: return match.group(0)
     return None
+
+
+# Milestone 7: turning one of first_date()'s extracted strings into a real date, for the rare
+# caller (deadline-reminder scheduling) that needs to do date arithmetic rather than just display
+# the string. Deliberately conservative and separate from first_date() itself: only the numeric
+# and month-name formats are attempted (never the Devanagari-digit pattern -- see below), and a
+# successful parse is still discarded unless it falls in a plausible window around today.
+#
+# Nepali government sites routinely publish dates in the Bikram Sambat calendar (currently ~56-57
+# years ahead of Gregorian) with nothing in the source text marking which calendar a given date
+# uses. A BS date string parsed as if it were Gregorian lands decades in the future/past --
+# the plausibility bound is what catches that (and any other parse gone wrong) rather than
+# silently trusting a date arithmetic can't actually justify (never fabricate).
+MONTH_NUMBERS = {
+    "jan":1,"january":1,"feb":2,"february":2,"mar":3,"march":3,"apr":4,"april":4,"may":5,
+    "jun":6,"june":6,"jul":7,"july":7,"aug":8,"august":8,"sep":9,"sept":9,"september":9,
+    "oct":10,"october":10,"nov":11,"november":11,"dec":12,"december":12,
+}
+_MONTH_FIRST = re.compile(r"^([A-Za-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})$")
+_DAY_FIRST_MONTH = re.compile(r"^(\d{1,2})\s+([A-Za-z]+)\.?\s+(\d{4})$")
+PLAUSIBLE_PAST = timedelta(days=365)
+PLAUSIBLE_FUTURE = timedelta(days=1095)
+
+
+def to_calendar_date(date_string):
+    """A real date.date, or None if date_string can't be confidently parsed as one. Assumes
+    day-before-month for the numeric d/m/y pattern (the regional convention DATE_PATTERNS itself
+    already follows) and never guesses at the alternative."""
+    if not date_string: return None
+    text = clean(date_string)
+    candidate = None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            candidate = datetime.strptime(text, fmt).date(); break
+        except ValueError:
+            continue
+    if candidate is None:
+        for pattern, order in ((_MONTH_FIRST, "mdy"), (_DAY_FIRST_MONTH, "dmy")):
+            match = pattern.match(text)
+            if not match: continue
+            month_name, day, year = (match.group(1), match.group(2), match.group(3)) if order == "mdy" \
+                else (match.group(2), match.group(1), match.group(3))
+            month = MONTH_NUMBERS.get(month_name.lower())
+            if not month: continue
+            try:
+                candidate = date(int(year), month, int(day)); break
+            except ValueError:
+                continue
+    if candidate is None: return None
+    today = date.today()
+    if not (today - PLAUSIBLE_PAST <= candidate <= today + PLAUSIBLE_FUTURE):
+        return None
+    return candidate
 
 
 def context_snippet(body, href):

@@ -6,12 +6,17 @@ from . import health, matching, storage
 
 
 def list_notices(query="", limit=50, source_id="", offset=0, province="", notice_type="", status="",
-                  category="", discovered_after="", discovered_before="", has_documents=None):
+                  category="", discovered_after="", discovered_before="", has_documents=None, source_ids=None):
     """Filtered, paginated notice search (Milestone 4). Deliberately no published_after/
     published_before: published_at is free-text extracted from source pages (formats vary --
     "04/07/2023", "2026-01-01", BS dates, ...), not a normalized comparable value, so a >=/<=
     string comparison on it would silently misorder results. discovered_after/discovered_before
-    filter on discovered_at instead, which is a real ISO timestamp this process itself sets."""
+    filter on discovered_at instead, which is a real ISO timestamp this process itself sets.
+
+    `source_ids` (Milestone 7, for watchlists.notices_for_watchlist) is a separate parameter from
+    `source_id` rather than replacing it -- the single-value filter is what every existing caller
+    (the /notices?source= API param, the dashboard) already uses, and appending a new parameter at
+    the end keeps every positional caller (api.py's GET /notices handler included) unaffected."""
     limit=max(1, min(int(limit), 100)); offset=max(0, int(offset))
     db=storage.conn(); args=[]; conditions=[]
     sql="select distinct n.* from notices n"
@@ -22,6 +27,8 @@ def list_notices(query="", limit=50, source_id="", offset=0, province="", notice
         conditions.append("(lower(n.title) like ? or lower(n.authority) like ?)"); args.extend([f"%{query.lower()}%"]*2)
     if source_id:
         conditions.append("n.source_id = ?"); args.append(source_id)
+    if source_ids:
+        conditions.append(f"n.source_id in ({','.join('?' * len(source_ids))})"); args.extend(source_ids)
     if province:
         conditions.append("n.province = ?"); args.append(province)
     if notice_type:
@@ -57,6 +64,20 @@ def source_summary():
             "consecutive_failures":source_health["consecutive_failures"] if source_health else 0,
             "skipped":health.should_skip(db, source["id"], threshold, cooldown_minutes)})
     db.close(); return result
+
+
+def notices_for_watchlist(watchlist_id, limit=50, offset=0):
+    """Milestone 7: run a watchlist's saved filters through list_notices(). Returns None if the
+    watchlist doesn't exist, distinguishing "no watchlist" (404) from "watchlist exists, nothing
+    currently matches" (empty list) -- same convention as matches_for_company()."""
+    watchlist = next((item for item in storage.watchlists() if item["id"] == watchlist_id), None)
+    if watchlist is None: return None
+    return list_notices(
+        query=watchlist.get("query", ""), limit=limit, offset=offset,
+        province=watchlist.get("province", ""), notice_type=watchlist.get("notice_type", ""),
+        status=watchlist.get("status", ""), category=watchlist.get("category", ""),
+        discovered_after=watchlist.get("discovered_after", ""), discovered_before=watchlist.get("discovered_before", ""),
+        has_documents=watchlist.get("has_documents"), source_ids=watchlist.get("source_ids") or None)
 
 
 def alert_summary():

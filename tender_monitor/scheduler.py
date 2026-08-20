@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 
-from . import collector, status
+from . import collector, reminders, status
 from .api import Api
 
 
@@ -29,8 +29,16 @@ def serve():
                     counts[result["status"]]=counts.get(result["status"],0)+1
                     if result["status"]=="error": print(json.dumps(result, ensure_ascii=False), flush=True)
                 elapsed=round(time.monotonic()-started,1)
-                status.last_cycle={"phase":"idle","started_at":started_at,"finished_at":datetime.now(timezone.utc).isoformat(),"duration_seconds":elapsed,"counts":counts}
-                print(f"Automatic collection finished in {elapsed}s: {json.dumps(counts, ensure_ascii=False)}", flush=True)
+                # Isolated from collect_all's own try/except: a bug in the reminder pass must not
+                # mark an otherwise-successful collection cycle as "crashed" (same isolation
+                # principle collect_one already applies per-source).
+                try:
+                    reminders_sent=reminders.send_due_reminders()
+                except Exception as exc:
+                    reminders_sent=0
+                    print(f"Deadline reminder pass failed (collection itself succeeded): {exc}", flush=True)
+                status.last_cycle={"phase":"idle","started_at":started_at,"finished_at":datetime.now(timezone.utc).isoformat(),"duration_seconds":elapsed,"counts":counts,"reminders_sent":reminders_sent}
+                print(f"Automatic collection finished in {elapsed}s: {json.dumps(counts, ensure_ascii=False)} ({reminders_sent} deadline reminder(s) sent)", flush=True)
             except Exception as exc:
                 status.last_cycle={"phase":"crashed","started_at":started_at,"finished_at":datetime.now(timezone.utc).isoformat(),"duration_seconds":None,"counts":{},"error":str(exc)}
                 print(f"Automatic collection cycle crashed, will retry next cycle: {exc}", flush=True)

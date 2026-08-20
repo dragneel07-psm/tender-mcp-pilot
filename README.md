@@ -53,6 +53,16 @@ prefixed to signal it's an update) or the unclassified `listing_changed` (record
 
 Copy `.env.example` to `.env`, then set `WHATSAPP_API_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_RECIPIENT`, and `WHATSAPP_TEMPLATE_NAME`. Each newly collected tender will then send a WhatsApp template alert automatically. The approved template must have three body variables: local government, notice title, and notice link. Production WhatsApp alerts require recipient opt-in.
 
+Alert delivery goes through `alerts.AlertProvider` (`WhatsAppAlertProvider` today), so change-detection and deadline-reminder alerts reuse the same template with a bracketed reason prefix (e.g. `[DEADLINE CHANGED] ...`) rather than needing their own delivery code.
+
+## Advanced watchlists
+
+A watchlist is a full saved search, not just a list of sources: `POST /watchlists` accepts `source_ids` plus any `/notices` filter (`query`, `province`, `notice_type`, `status`, `category`, `discovered_after`, `discovered_before`, `has_documents`). `GET /watchlists/{id}/notices` re-runs those saved filters and returns the current matches.
+
+## Deadline reminders
+
+When a notice has a known `submission_deadline` (Milestone 3, document intelligence) within `DEADLINE_REMINDER_DAYS` (default 3) days, the scheduler sends exactly one reminder alert for it per collection cycle pass. Has no effect while `DOCUMENT_PROCESSING_ENABLED=0` (the default), since `submission_deadline` stays null until that's turned on.
+
 ## Cloud deployment: Railway
 
 The Railway service runs the collector, database, source registry, dashboard, and WhatsApp delivery — there is no separate frontend host.

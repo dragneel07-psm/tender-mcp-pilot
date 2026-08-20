@@ -240,6 +240,15 @@ def validate_company_profile(payload, current=None):
             "name": name, "categories": categories, "provinces": provinces, "keywords": keywords}
 
 
+# Milestone 7: the filter fields a watchlist can save, beyond source_ids -- exactly
+# queries.list_notices()'s own filter set (minus query/limit/offset), so a watchlist is a genuine
+# saved search rather than a second, parallel filter vocabulary. Existing watchlists (e.g. the
+# checked-in "Important" entry, which predates this) simply lack these keys -- storage.watchlists()
+# returns them as-is, and every reader below defaults a missing key to "no filter", so old entries
+# keep working unchanged until someone edits and re-saves them.
+WATCHLIST_TEXT_FILTERS = ("query", "province", "notice_type", "status", "category", "discovered_after", "discovered_before")
+
+
 def validate_watchlist(payload, current=None):
     name=clean(str(payload.get("name", current.get("name", "") if current else "")))
     source_ids=payload.get("source_ids", current.get("source_ids", []) if current else [])
@@ -247,7 +256,16 @@ def validate_watchlist(payload, current=None):
     if not isinstance(source_ids, list): raise ValueError("Source selections must be a list.")
     valid_ids={item["id"] for item in sources()}
     selected=[item for item in dict.fromkeys(str(value) for value in source_ids) if item in valid_ids]
-    return {"id":current["id"] if current else "wl-"+hashlib.sha1(name.encode()).hexdigest()[:12], "name":name, "source_ids":selected}
+    result={"id":current["id"] if current else "wl-"+hashlib.sha1(name.encode()).hexdigest()[:12], "name":name, "source_ids":selected}
+    for key in WATCHLIST_TEXT_FILTERS:
+        value=payload.get(key, current.get(key, "") if current else "")
+        result[key]=clean(str(value)) if value else ""
+    has_documents=payload.get("has_documents", current.get("has_documents") if current else None)
+    if isinstance(has_documents, str): has_documents={"true":True,"false":False}.get(has_documents.lower())
+    if has_documents is not None and not isinstance(has_documents, bool):
+        raise ValueError("has_documents must be true, false, or omitted.")
+    result["has_documents"]=has_documents
+    return result
 
 
 def validate_source(payload, current=None):

@@ -15,11 +15,13 @@ def alert():
 
 
 def test_whatsapp():
-    status, detail = alerts.send_whatsapp_alert({
+    # Deliberately calls the concrete WhatsApp provider, not alerts.send_alert() -- this command
+    # exists specifically to test WhatsApp connectivity, not to exercise provider dispatch.
+    status, detail = alerts.WhatsAppAlertProvider().send({
         "authority":"Notice Feed test",
         "title":"WhatsApp alert connection test",
         "url":"http://127.0.0.1:8787/",
-    })
+    }, "new_notice")
     print(json.dumps({"status":status,"detail":detail},ensure_ascii=False,indent=2))
 
 
