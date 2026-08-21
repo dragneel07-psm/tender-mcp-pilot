@@ -6,17 +6,17 @@ from . import health, matching, storage
 
 
 def list_notices(query="", limit=50, source_id="", offset=0, province="", notice_type="", status="",
-                  category="", discovered_after="", discovered_before="", has_documents=None, source_ids=None):
+                  category="", discovered_after="", discovered_before="", has_documents=None, source_ids=None, unread=None):
     """Filtered, paginated notice search (Milestone 4). Deliberately no published_after/
     published_before: published_at is free-text extracted from source pages (formats vary --
     "04/07/2023", "2026-01-01", BS dates, ...), not a normalized comparable value, so a >=/<=
     string comparison on it would silently misorder results. discovered_after/discovered_before
     filter on discovered_at instead, which is a real ISO timestamp this process itself sets.
 
-    `source_ids` (Milestone 7, for watchlists.notices_for_watchlist) is a separate parameter from
-    `source_id` rather than replacing it -- the single-value filter is what every existing caller
-    (the /notices?source= API param, the dashboard) already uses, and appending a new parameter at
-    the end keeps every positional caller (api.py's GET /notices handler included) unaffected."""
+    `source_ids` (Milestone 7, for watchlists.notices_for_watchlist) and `unread` (Milestone 9,
+    for the dashboard's "Unread only" toggle now that it filters server-side instead of a fetched
+    batch) are appended at the end rather than inserted alongside their nearest-in-spirit
+    neighbors, so no existing positional caller (api.py's GET /notices handler included) shifts."""
     limit=max(1, min(int(limit), 100)); offset=max(0, int(offset))
     db=storage.conn(); args=[]; conditions=[]
     sql="select distinct n.* from notices n"
@@ -42,6 +42,8 @@ def list_notices(query="", limit=50, source_id="", offset=0, province="", notice
     if has_documents is not None:
         exists_clause="exists (select 1 from documents d where d.notice_id = n.id)"
         conditions.append(exists_clause if has_documents else f"not {exists_clause}")
+    if unread is not None:
+        conditions.append("n.seen_at is null" if unread else "n.seen_at is not null")
     if conditions: sql += " where " + " and ".join(conditions)
     sql += " order by n.discovered_at desc limit ? offset ?"
     rows=[dict(r) for r in db.execute(sql, args+[limit, offset])]; db.close(); return rows

@@ -1,5 +1,43 @@
 # Changelog
 
+## Milestone 9 — Dashboard 2.0
+
+- `dashboard.html`'s notice feed now uses the server's real pagination/filters
+  (`GET /notices?query=&category=&province=&notice_type=&status=&unread=&limit=&offset=`) instead
+  of fetching up to 100 rows and filtering them client-side (audit §10's "fetch all 662 sources,
+  all 100 notices, client-side filter" complaint, finally addressed on the notices side now that
+  the API has real filters/pagination from Milestones 4 and 7). New category/province/notice-type/
+  status filter dropdowns (debounced text search unchanged) and a "Load more" button replacing the
+  fixed 100-row cap. Metric tiles that summarize the *loaded* batch are relabeled ("Loaded
+  notices", "Unread in view", "New in 48h (view)") rather than implying they're totals -- with
+  pagination now capping the page at 30 by default, presenting a partial count as a total would be
+  the same class of dishonesty the "never fabricate" rule already forbids for data fields.
+- New backend `unread` filter on `queries.list_notices()`/`GET /notices` (tri-state, same pattern
+  as `has_documents`) so the dashboard's "Unread only" toggle filters server-side too, not just
+  within whatever page happened to be loaded.
+- Watchlist creation gained category/province/notice-type/status selects alongside the existing
+  source checkboxes (Milestone 7's saved-search fields, now actually reachable from the UI).
+  Selecting a watchlist now calls `GET /watchlists/{id}/notices` instead of client-side filtering
+  by `source_ids` -- a watchlist with no sources checked (pure category/province/etc. search) is
+  now correctly treated as "every source", not "zero sources" (the old client-side filter would
+  have hidden everything for an unscoped watchlist).
+- Notices now show status-derived badges (Cancelled, Awarded, Corrigendum) directly from fields
+  already in the row -- no extra request. A new "History" button per notice lazily fetches
+  `GET /notices/{id}/changes` on first click and caches it client-side, so Milestone 6's change
+  detection has its first dashboard surface.
+- Fixed a real CSS bug caught during manual verification: `.load-more{display:flex}` overrode the
+  `hidden` attribute's implicit `display:none` (same class of bug the existing `.manager[hidden]`
+  rule was already guarding against elsewhere in this file) -- the "Load more" button was visible
+  even with nothing left to load until an explicit `.load-more[hidden]{display:none}` rule was
+  added.
+- Visual style intentionally unchanged (same CSS variables, layout, component look) -- this
+  milestone is a functional rewrite of the data-fetching model, not a redesign.
+- Backend test suite: 190 → 192 (`unread` filter coverage in `tests/test_collection_health.py` and
+  `tests/test_api.py`). `dashboard.html` itself has no automated test harness (matches the rest of
+  this pilot's approach to the dashboard); verified manually end-to-end in a real browser against
+  a seeded isolated dataset -- new-notice badges, category/province filtering, watchlist
+  save/view, per-notice History panels, and the mark-read/unread-only interaction.
+
 ## Milestone 8 — MCP 2.0
 
 - Expanded from 3 MCP tools to 11, now that source health, collection status, matching,

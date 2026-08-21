@@ -63,6 +63,10 @@ A watchlist is a full saved search, not just a list of sources: `POST /watchlist
 
 When a notice has a known `submission_deadline` (Milestone 3, document intelligence) within `DEADLINE_REMINDER_DAYS` (default 3) days, the scheduler sends exactly one reminder alert for it per collection cycle pass. Has no effect while `DOCUMENT_PROCESSING_ENABLED=0` (the default), since `submission_deadline` stays null until that's turned on.
 
+## Dashboard
+
+`dashboard.html` is a single static file (no build step) that now drives its notice feed entirely off the server's own pagination/filters (`GET /notices?...`) instead of fetching a capped batch and filtering it client-side. It supports category/province/notice-type/status/unread filters, a "Load more" button, per-notice change-history panels (lazy-loaded from `GET /notices/{id}/changes`), and status-derived badges (Cancelled/Awarded/Corrigendum). Selecting a watchlist switches the feed to `GET /watchlists/{id}/notices`, so a saved search behaves identically whether it's viewed from the dashboard, the API, or an MCP client.
+
 ## Cloud deployment: Railway
 
 The Railway service runs the collector, database, source registry, dashboard, and WhatsApp delivery — there is no separate frontend host.

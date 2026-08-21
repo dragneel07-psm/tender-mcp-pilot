@@ -191,6 +191,16 @@ class NoticesEndpointTests(ApiTestBase):
         _, detail = self.request("GET", f"/notices/{'a'*64}")
         self.assertIsNotNone(detail["seen_at"])
 
+    def test_unread_query_param_filters_notices(self):
+        self._seed_notice()
+        status, unread = self.request("GET", "/notices?unread=true")
+        self.assertEqual(len(unread), 1)
+        self.request("POST", f"/notices/{'a'*64}/mark-seen")
+        status, unread = self.request("GET", "/notices?unread=true")
+        self.assertEqual(unread, [])
+        status, read = self.request("GET", "/notices?unread=false")
+        self.assertEqual(len(read), 1)
+
     def test_changes_for_unknown_notice_is_404(self):
         status, payload = self.request("GET", f"/notices/{'f'*64}/changes")
         self.assertEqual(status, 404)

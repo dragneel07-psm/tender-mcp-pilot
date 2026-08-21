@@ -375,6 +375,19 @@ class CollectionHealthTests(unittest.TestCase):
         self.assertEqual(len(queries.list_notices(has_documents=True)), 0)
         self.assertEqual(len(queries.list_notices(has_documents=False)), 1)
 
+    def test_list_notices_unread_filter(self):
+        with mock.patch.object(net, "fetch", return_value='<a href="/n/1">Road construction bolpatra notice</a>'):
+            collector.collect_one(self.source())
+        notice_id = queries.list_notices(source_id="test-source")[0]["id"]
+        self.assertEqual(len(queries.list_notices(unread=True)), 1)
+        self.assertEqual(len(queries.list_notices(unread=False)), 0)
+        db = storage.conn()
+        db.execute("update notices set seen_at=? where id=?", ("2026-01-01T00:00:00+00:00", notice_id))
+        db.commit(); db.close()
+        self.assertEqual(len(queries.list_notices(unread=True)), 0)
+        self.assertEqual(len(queries.list_notices(unread=False)), 1)
+        self.assertEqual(len(queries.list_notices()), 1)  # unread=None (omitted) -> no filter
+
     def test_manual_single_source_collect_ignores_skip(self):
         src = self.source()
         with mock.patch.object(storage, "sources", return_value=[src]):

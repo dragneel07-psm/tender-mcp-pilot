@@ -61,12 +61,14 @@ class Api(BaseHTTPRequestHandler):
             return self.respond(result if result is not None else {"error":"not found"}, 200 if result is not None else 404)
         if path == "/notices":
             has_documents=params.get("has_documents",[""])[0]
+            unread=params.get("unread",[""])[0]
             return self.respond(queries.list_notices(
                 params.get("query",[""])[0], int(params.get("limit",[50])[0]), params.get("source",[""])[0],
                 int(params.get("offset",[0])[0]), params.get("province",[""])[0], params.get("notice_type",[""])[0],
                 params.get("status",[""])[0], params.get("category",[""])[0],
                 params.get("discovered_after",[""])[0], params.get("discovered_before",[""])[0],
-                {"true":True,"false":False}.get(has_documents.lower())))
+                {"true":True,"false":False}.get(has_documents.lower()), None,
+                {"true":True,"false":False}.get(unread.lower())))
         documents_match=re.fullmatch(r"/notices/([a-f0-9]{64})/documents", path)
         if documents_match:
             record=queries.details(documents_match.group(1))
