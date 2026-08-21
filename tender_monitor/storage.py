@@ -46,6 +46,13 @@ NOTICES_MIGRATION_COLUMNS = (
     # Milestone 3: not backfilled -- deriving it for old rows means re-fetching and re-parsing
     # every document they ever linked to, out of scope for a schema migration step.
     ("submission_deadline", "text"),
+    # Milestone 10: AI-derived fields, never backfilled -- same reasoning as submission_deadline,
+    # plus a real per-call cost this time (an LLM API call per notice), so a schema migration must
+    # never trigger one implicitly. These columns have no other writer anywhere in this codebase
+    # (see ai.py's module docstring), so their mere presence is the provenance tag: non-null here
+    # unambiguously means an AI model produced it, never a rule-based or source-derived value.
+    ("estimated_amount", "text"), ("bid_security_amount", "text"), ("eligibility_summary", "text"),
+    ("ai_provider", "text"), ("ai_extraction_status", "text"), ("ai_extracted_at", "text"),
 )
 BACKFILLABLE_COLUMNS = ("organization", "province", "notice_type", "status", "first_seen", "last_seen")
 

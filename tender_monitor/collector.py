@@ -5,7 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from . import adapters, alerts, documents, health, net, parsing, storage
+from . import adapters, ai, alerts, documents, health, net, parsing, storage
 
 
 def _classify_change(snippet, current_published_at):
@@ -35,6 +35,37 @@ def _classify_change(snippet, current_published_at):
     if signal == "corrigendum":
         return "CORRIGENDUM", None, None
     return "listing_changed", None, None
+
+
+def _run_ai_extraction(candidates, now):
+    """Milestone 10, off by default (AI_EXTRACTION_ENABLED) and bounded even when on
+    (AI_EXTRACTION_LIMIT) -- each call is a real, paid LLM API call, so this is deliberately more
+    conservative than the free document-download step it depends on (only notices whose document
+    already yielded usable text this cycle are even candidates). Runs outside DB_WRITE_LOCK, same
+    reasoning as the alert-sending loop above (network calls); each notice's result is written
+    back under its own short-lived lock so one slow/failed call can't hold up the others."""
+    if not candidates or os.getenv("AI_EXTRACTION_ENABLED", "0") != "1": return
+    provider = ai.configured_provider()
+    if provider is None: return
+    provider_name = os.getenv("AI_PROVIDER", "").strip().lower()
+    limit = max(0, int(os.getenv("AI_EXTRACTION_LIMIT", "3")))
+    for notice, text in list(candidates.values())[:limit]:
+        result = provider.extract(text)
+        with storage.DB_WRITE_LOCK:
+            db = storage.conn()
+            try:
+                # Content fields are coalesce-only -- never overwrite an already-set value with a
+                # new AI guess (a notice only ever reaches this block once in its life today, but
+                # coalesce is the honest default regardless). ai_provider/status/timestamp always
+                # reflect this attempt, whether or not it produced usable content.
+                db.execute("""update notices set
+                    estimated_amount=coalesce(estimated_amount,?), bid_security_amount=coalesce(bid_security_amount,?),
+                    eligibility_summary=coalesce(eligibility_summary,?),
+                    ai_provider=?, ai_extraction_status=?, ai_extracted_at=? where id=?""",
+                    (result.get("estimated_amount"), result.get("bid_security_amount"), result.get("eligibility_summary"),
+                     provider_name, result["status"], now, notice["id"]))
+                db.commit()
+            finally: db.close()
 
 
 def _discover_notice_documents(notice):
@@ -142,6 +173,7 @@ def collect_one(source):
         if new_notices and os.getenv("DOCUMENT_PROCESSING_ENABLED", "0") == "1":
             doc_limit=max(0, int(os.getenv("DOCUMENT_DOWNLOAD_LIMIT", "3")))
             to_process=new_notices[:doc_limit]
+            ai_candidates={}  # notice_id -> (notice, extracted_text): first usable document text per notice this cycle
             if to_process:
                 doc_workers=min(len(to_process), max(1, int(os.getenv("DOCUMENT_DOWNLOAD_WORKERS", "3"))))
                 with ThreadPoolExecutor(max_workers=doc_workers) as pool:
@@ -161,8 +193,10 @@ def collect_one(source):
                                     deadline=documents.extract_submission_deadline(doc["extracted_text"])
                                     if deadline:
                                         db.execute("update notices set submission_deadline=coalesce(submission_deadline,?) where id=?", (deadline,notice["id"]))
+                                    ai_candidates.setdefault(notice["id"], (notice, doc["extracted_text"]))
                         db.commit()
                     finally: db.close()
+                _run_ai_extraction(ai_candidates, now)
         return {"source":source["name"],"status":"ok","new":added}
     except Exception as exc:
         try:

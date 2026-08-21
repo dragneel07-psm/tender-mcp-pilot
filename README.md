@@ -67,6 +67,10 @@ When a notice has a known `submission_deadline` (Milestone 3, document intellige
 
 `dashboard.html` is a single static file (no build step) that now drives its notice feed entirely off the server's own pagination/filters (`GET /notices?...`) instead of fetching a capped batch and filtering it client-side. It supports category/province/notice-type/status/unread filters, a "Load more" button, per-notice change-history panels (lazy-loaded from `GET /notices/{id}/changes`), and status-derived badges (Cancelled/Awarded/Corrigendum). Selecting a watchlist switches the feed to `GET /watchlists/{id}/notices`, so a saved search behaves identically whether it's viewed from the dashboard, the API, or an MCP client.
 
+## AI-assisted extraction
+
+Off by default (`AI_EXTRACTION_ENABLED=0`), and only reachable when `DOCUMENT_PROCESSING_ENABLED=1` (it works from a document's already-extracted text). When on, and an AI provider is configured (`AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`), each genuinely new notice with usable document text gets one bounded LLM call (`AI_EXTRACTION_LIMIT` per source per cycle) to extract `estimated_amount`, `bid_security_amount`, and `eligibility_summary` -- the fields Milestone 3's regex-based extraction deliberately left null because attributing the right monetary figure without real language understanding is unreliable. These fields have no other writer anywhere in the codebase, so their presence is itself the provenance tag: never confused with a source-derived or rule-based value, and never overwritten once set. `tender_monitor/ai.py`'s `AIProvider` interface is provider-independent; `AnthropicProvider` (plain `urllib`, no new dependency) is the only implementation today.
+
 ## Cloud deployment: Railway
 
 The Railway service runs the collector, database, source registry, dashboard, and WhatsApp delivery — there is no separate frontend host.

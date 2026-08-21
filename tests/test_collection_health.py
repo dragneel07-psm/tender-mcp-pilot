@@ -21,6 +21,10 @@ class CollectionHealthTests(unittest.TestCase):
     # configured recipient. Clearing them makes alerts.WhatsAppAlertProvider take its own designed
     # "not configured" no-op path (alerts.py) -- the same path production takes when unconfigured.
     WHATSAPP_KEYS = ("WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME")
+    # Milestone 10: tracked/restored the same way as WHATSAPP_KEYS above, so AI-extraction tests
+    # can freely set these without a per-test try/finally -- tearDown restores whatever this
+    # process's real .env actually had (nothing, today; see ai.py's no-live-key state).
+    AI_KEYS = ("AI_PROVIDER", "AI_EXTRACTION_ENABLED", "AI_EXTRACTION_LIMIT", "ANTHROPIC_API_KEY", "AI_MODEL")
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -31,12 +35,17 @@ class CollectionHealthTests(unittest.TestCase):
         os.environ["SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES"] = "360"
         self._orig_whatsapp_env = {k: os.environ.get(k) for k in self.WHATSAPP_KEYS}
         for k in self.WHATSAPP_KEYS: os.environ.pop(k, None)
+        self._orig_ai_env = {k: os.environ.get(k) for k in self.AI_KEYS}
+        for k in self.AI_KEYS: os.environ.pop(k, None)
 
     def tearDown(self):
         storage.DB = self._orig_db
         os.environ.pop("SOURCE_FAILURE_SKIP_THRESHOLD", None)
         os.environ.pop("SOURCE_FAILURE_SKIP_COOLDOWN_MINUTES", None)
         for k, v in self._orig_whatsapp_env.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
+        for k, v in self._orig_ai_env.items():
             if v is None: os.environ.pop(k, None)
             else: os.environ[k] = v
 
@@ -349,6 +358,94 @@ class CollectionHealthTests(unittest.TestCase):
             self.assertEqual(len(docs), 1)
             self.assertEqual(docs[0]["extraction_status"], "ok")
             self.assertEqual(docs[0]["document_type"], "tender_notice")
+        finally:
+            os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
+
+    # -- Milestone 10: AI extraction wiring ---------------------------------------------------
+
+    def _collect_with_document(self, extracted_text="Estimated cost: NPR 5,000,000. Bid security: NPR 100,000."):
+        listing_html = '<a href="/n/1">Road construction bolpatra notice</a>'
+        notice_page_html = '<a href="/docs/notice.pdf">Tender Notice</a>'
+        def fake_fetch(url, timeout=None, retries=None):
+            if url == "https://example.gov.np/notices": return listing_html
+            return notice_page_html
+        fake_doc = {"url": "https://example.gov.np/docs/notice.pdf", "sha256": "abc123", "size_bytes": 100,
+                    "content_type": "application/pdf", "extracted_text": extracted_text, "extraction_status": "ok"}
+        with mock.patch.object(net, "fetch", side_effect=fake_fetch), \
+             mock.patch.object(documents, "download_and_extract", return_value=dict(fake_doc)):
+            return collector.collect_one(self.source())
+
+    def test_ai_extraction_off_by_default(self):
+        os.environ["DOCUMENT_PROCESSING_ENABLED"] = "1"
+        os.environ["AI_PROVIDER"] = "anthropic"
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        try:
+            with mock.patch("tender_monitor.ai.AnthropicProvider.extract") as extract_mock:
+                self._collect_with_document()
+            extract_mock.assert_not_called()
+            notice = queries.list_notices(source_id="test-source")[0]
+            self.assertIsNone(notice["estimated_amount"])
+            self.assertIsNone(notice["ai_extraction_status"])
+        finally:
+            os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
+
+    def test_ai_extraction_skips_without_a_configured_provider(self):
+        os.environ["DOCUMENT_PROCESSING_ENABLED"] = "1"
+        os.environ["AI_EXTRACTION_ENABLED"] = "1"
+        # AI_PROVIDER/ANTHROPIC_API_KEY deliberately left unset -- ai.configured_provider() must
+        # return None, and the extraction step must skip cleanly rather than erroring.
+        try:
+            result = self._collect_with_document()
+            self.assertEqual(result["status"], "ok")
+            notice = queries.list_notices(source_id="test-source")[0]
+            self.assertIsNone(notice["ai_extraction_status"])
+        finally:
+            os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
+
+    def test_ai_extraction_writes_fields_when_enabled_and_configured(self):
+        os.environ["DOCUMENT_PROCESSING_ENABLED"] = "1"
+        os.environ["AI_EXTRACTION_ENABLED"] = "1"
+        os.environ["AI_PROVIDER"] = "anthropic"
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        try:
+            fake_result = {"status": "ok", "estimated_amount": "NPR 5,000,000", "bid_security_amount": "NPR 100,000", "eligibility_summary": "Registered contractors only."}
+            with mock.patch("tender_monitor.ai.AnthropicProvider.extract", return_value=fake_result):
+                self._collect_with_document()
+            notice = queries.list_notices(source_id="test-source")[0]
+            self.assertEqual(notice["estimated_amount"], "NPR 5,000,000")
+            self.assertEqual(notice["bid_security_amount"], "NPR 100,000")
+            self.assertEqual(notice["eligibility_summary"], "Registered contractors only.")
+            self.assertEqual(notice["ai_provider"], "anthropic")
+            self.assertEqual(notice["ai_extraction_status"], "ok")
+            self.assertIsNotNone(notice["ai_extracted_at"])
+        finally:
+            os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
+
+    def test_ai_extraction_records_failure_status_without_crashing_the_cycle(self):
+        os.environ["DOCUMENT_PROCESSING_ENABLED"] = "1"
+        os.environ["AI_EXTRACTION_ENABLED"] = "1"
+        os.environ["AI_PROVIDER"] = "anthropic"
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        try:
+            with mock.patch("tender_monitor.ai.AnthropicProvider.extract", return_value={"status": "parse_failed"}):
+                result = self._collect_with_document()
+            self.assertEqual(result["status"], "ok")
+            notice = queries.list_notices(source_id="test-source")[0]
+            self.assertEqual(notice["ai_extraction_status"], "parse_failed")
+            self.assertIsNone(notice["estimated_amount"])
+        finally:
+            os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
+
+    def test_ai_extraction_limit_of_zero_skips_every_candidate(self):
+        os.environ["DOCUMENT_PROCESSING_ENABLED"] = "1"
+        os.environ["AI_EXTRACTION_ENABLED"] = "1"
+        os.environ["AI_PROVIDER"] = "anthropic"
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        os.environ["AI_EXTRACTION_LIMIT"] = "0"
+        try:
+            with mock.patch("tender_monitor.ai.AnthropicProvider.extract") as extract_mock:
+                self._collect_with_document()
+            extract_mock.assert_not_called()
         finally:
             os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
 

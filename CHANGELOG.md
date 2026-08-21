@@ -1,5 +1,45 @@
 # Changelog
 
+## Milestone 10 — AI intelligence
+
+- New `tender_monitor/ai.py`: `AIProvider` ABC (`is_configured`/`extract`) and `AnthropicProvider`,
+  the only implementation today -- built on plain `urllib` (same choice `alerts.py` already made
+  for WhatsApp's Graph API), so this milestone adds **zero new dependencies** despite being the
+  first one the roadmap flagged as potentially needing one. Extracts the three fields Milestone
+  3's regex-based document intelligence deliberately left null: `estimated_amount`,
+  `bid_security_amount`, `eligibility_summary` -- a tender document routinely states several
+  monetary figures, and attributing the right one without real language understanding is
+  unreliable enough that a wrong-but-confident number is worse than none. The extraction prompt
+  explicitly instructs the model to return `null` for anything not directly stated in the text --
+  never guess, infer, or estimate (the same "never fabricate" discipline
+  `documents.extract_submission_deadline`'s keyword-gating already applies to the non-AI case).
+- **Provenance-tagged** (target spec §29): the new `estimated_amount`/`bid_security_amount`/
+  `eligibility_summary`/`ai_provider`/`ai_extraction_status`/`ai_extracted_at` columns have no
+  other writer anywhere in this codebase, so their mere presence unambiguously means an AI model
+  produced them -- never confused with a source-derived or rule-based field, and the content
+  fields are coalesce-only in `collector.py` (never overwrite an already-set value with a new AI
+  guess).
+- **Strictly optional** (engineering rule #13), same "skipped" pattern `alerts.py` already uses
+  for unconfigured WhatsApp: collection, search, and alerts all keep working with zero AI
+  configured. Gated behind two independent switches -- `AI_EXTRACTION_ENABLED=0` by default, and
+  only reachable at all when `DOCUMENT_PROCESSING_ENABLED=1` (it works from a document's
+  already-extracted text, so it inherits that flag's own off-by-default posture) -- plus
+  `AI_EXTRACTION_LIMIT` bounding how many real, paid LLM calls run per source per cycle, since this
+  is real per-call cost unlike the free document-download step it depends on. Runs outside
+  `DB_WRITE_LOCK` (network calls), each notice's result written back under its own short lock, same
+  pattern the alert-sending loop already uses.
+- **Shipped fully inert**: no `AI_PROVIDER`/`ANTHROPIC_API_KEY` is configured in production, so
+  this milestone has zero live effect until an operator deliberately opts in -- same discipline
+  Milestone 3 used for `DOCUMENT_PROCESSING_ENABLED`.
+- `dashboard.html` gained a purely additive display: when a notice has any AI-derived field, its
+  card shows an "AI" tag with the extracted amount(s)/eligibility summary; renders nothing
+  (unchanged from Milestone 9) for the vast majority of notices where these stay null.
+- Test suite: 192 → 213. New `tests/test_ai.py` (provider dispatch, null-preservation, malformed/
+  non-object JSON, network/HTTP errors, field-length truncation, provider selection) plus
+  collection-pipeline wiring tests in `tests/test_collection_health.py` (off-by-default, no-
+  provider skip, successful write, failure-status recording, zero-limit skip) and a migration test
+  confirming the six new columns are never backfilled.
+
 ## Milestone 9 — Dashboard 2.0
 
 - `dashboard.html`'s notice feed now uses the server's real pagination/filters

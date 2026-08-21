@@ -7,7 +7,7 @@ This adapts the requested 12-milestone structure to what `ARCHITECTURE_AUDIT.md`
 
 Each milestone ends with: tests green, README/CHANGELOG updated, and (for milestones that touch the live app) a deploy + production verification pass — the same discipline already used for every change made to this app so far this session.
 
-**Status: Milestones 1-9 shipped.** See `CHANGELOG.md` for what actually landed in each (the entries there are the record of truth; this file stays the forward-looking plan and isn't rewritten after the fact).
+**Status: Milestones 1-10 shipped.** See `CHANGELOG.md` for what actually landed in each (the entries there are the record of truth; this file stays the forward-looking plan and isn't rewritten after the fact).
 
 ---
 

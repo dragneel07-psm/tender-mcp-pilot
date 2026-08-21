@@ -114,6 +114,18 @@ class MigrationFromOldSchemaTests(unittest.TestCase):
         db.close()
         self.assertEqual(count, 1)
 
+    def test_ai_columns_exist_and_are_never_backfilled(self):
+        """Milestone 10 additions to an old-shape database: five AI-provenance columns, none
+        backfilled -- there is no honest way to have run an LLM extraction against these rows in
+        the past, and a schema migration must never trigger a real (paid) API call implicitly."""
+        db = storage.conn()
+        columns = {row[1] for row in db.execute("pragma table_info(notices)")}
+        for column in ("estimated_amount", "bid_security_amount", "eligibility_summary", "ai_provider", "ai_extraction_status", "ai_extracted_at"):
+            self.assertIn(column, columns)
+        row = db.execute("select estimated_amount, bid_security_amount, eligibility_summary, ai_provider, ai_extraction_status, ai_extracted_at from notices where id='n1'").fetchone()
+        db.close()
+        self.assertTrue(all(value is None for value in row))
+
     def test_migration_runs_exactly_once_not_on_every_connection(self):
         db1 = storage.conn()
         db1.execute("update notices set organization = 'manually edited' where id='n1'")
