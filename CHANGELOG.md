@@ -1,5 +1,34 @@
 # Changelog
 
+## Milestone 11 — PostgreSQL/queue migration decision: not yet
+
+Per target spec §24 and the "do not migrate for fashion" engineering rule, this milestone's
+deliverable is a documented decision against real production evidence, not code -- the roadmap
+itself only calls for a migration if a trigger condition is actually met. Evidence gathered
+directly from the live Railway deployment (`railway ssh` into the running container, not a local
+dev copy) on 2026-08-21:
+
+- **6,945** rows in `notices`, **40** in `documents`, **30,290** in `runs`, **7,027** in
+  `deliveries` -- `tenders.db` is **16 MB** on disk.
+- **One Railway replica.** No `numReplicas`/scaling configuration exists in `railway.toml`, and
+  nothing in this project's growth (roughly linear with the ~662-source registry, not exponential)
+  suggests horizontal scaling is imminent.
+- No reports of `DB_WRITE_LOCK` contention since Milestone 1's fix (the write-serialization lock
+  introduced specifically because raising `COLLECTOR_WORKERS` once caused "database is locked"
+  errors) -- that fix has held for the ~10 milestones since, across a full `COLLECTOR_WORKERS=40`
+  production configuration.
+- Milestone 4 already added the indexes (`notices.source_id`, `notices.discovered_at`,
+  `notice_categories.category`) that were the actual bottleneck risk at this scale, not SQLite's
+  storage engine itself.
+
+**Neither trigger condition in the roadmap is met**: no multi-replica requirement, and row count
+nowhere near where SQLite's single-file model becomes the bottleneck (SQLite comfortably handles
+databases orders of magnitude larger than 16 MB / ~7,000 rows). **Decision: not yet.** Revisit
+this decision if either condition changes -- concretely, if Railway replicas become necessary
+(this app currently can't run multi-replica anyway, since `DB_WRITE_LOCK` is an in-process lock
+that provides no cross-process/cross-replica coordination) or if `notices` growth trajectory
+starts pointing toward tens of millions of rows. No code changed this milestone.
+
 ## Milestone 10 — AI intelligence
 
 - New `tender_monitor/ai.py`: `AIProvider` ABC (`is_configured`/`extract`) and `AnthropicProvider`,
