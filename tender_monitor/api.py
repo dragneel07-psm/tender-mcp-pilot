@@ -9,7 +9,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
-from . import collector, queries, status, storage
+from . import collector, queries, ratelimit, status, storage
 from .config import ROOT
 
 
@@ -19,6 +19,16 @@ class Api(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Cache-Control", "no-store")
+    def rate_limited(self):
+        # Milestone 12 (audit §13): checked before require_auth() so a leaked password can't be
+        # used to hammer the API past this limit either -- volume is throttled regardless of
+        # whether the request would have authenticated. /health is exempt: Railway's own
+        # healthcheck polls it and must never be capable of tripping this.
+        if self.path.split("?",1)[0] == "/health": return False
+        if ratelimit.allow(self.client_address[0]): return False
+        self.send_response(429); self.security_headers()
+        self.send_header("Retry-After", os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")); self.end_headers()
+        return True
     def require_auth(self):
         if self.path.split("?",1)[0] == "/health": return True
         username=os.getenv("APP_USERNAME", ""); password=os.getenv("APP_PASSWORD", "")
@@ -38,6 +48,7 @@ class Api(BaseHTTPRequestHandler):
     def respond(self, payload, status_code=200):
         data=json.dumps(payload, ensure_ascii=False).encode(); self.send_response(status_code); self.security_headers(); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_GET(self):
+        if self.rate_limited(): return
         if not self.require_auth(): return
         path, _, qs=self.path.partition("?"); params=urllib.parse.parse_qs(qs)
         if path == "/" or re.fullmatch(r"/source/[a-z0-9-]+", path):
@@ -83,6 +94,7 @@ class Api(BaseHTTPRequestHandler):
             record=queries.details(path.rsplit("/",1)[1]); return self.respond(record or {"error":"not found"}, 200 if record else 404)
         self.respond({"error":"not found"},404)
     def do_POST(self):
+        if self.rate_limited(): return
         if not self.require_auth(): return
         if self.path == "/watchlists":
             try:
@@ -127,6 +139,7 @@ class Api(BaseHTTPRequestHandler):
             db.execute("update notices set seen_at=? where source_id=? and seen_at is null", (now,match.group(1))); count=db.execute("select changes()").fetchone()[0]; db.commit(); db.close()
         self.respond({"marked_seen":count})
     def do_PATCH(self):
+        if self.rate_limited(): return
         if not self.require_auth(): return
         watchlist_match=re.fullmatch(r"/watchlists/(wl-[a-f0-9]+)", self.path)
         if watchlist_match:
@@ -159,6 +172,7 @@ class Api(BaseHTTPRequestHandler):
             self.respond(items[index])
         except (ValueError, json.JSONDecodeError) as exc: self.respond({"error":str(exc)},400)
     def do_DELETE(self):
+        if self.rate_limited(): return
         if not self.require_auth(): return
         watchlist_match=re.fullmatch(r"/watchlists/(wl-[a-f0-9]+)", self.path)
         if watchlist_match:

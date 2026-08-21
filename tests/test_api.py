@@ -12,7 +12,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from tender_monitor import collector, storage
+from tender_monitor import collector, ratelimit, storage
 from tender_monitor.api import Api
 
 
@@ -32,11 +32,17 @@ class ApiTestBase(unittest.TestCase):
         # credentials) into os.environ by the time this process started -- clear everything each
         # test might be sensitive to so tests reflect a clean environment, not this machine's.
         env_keys = ("REQUIRE_AUTH", "APP_USERNAME", "APP_PASSWORD", "HOST",
-                    "WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME")
+                    "WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME",
+                    "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW_SECONDS")
         self._orig_env = {k: os.environ.get(k) for k in env_keys}
         os.environ["REQUIRE_AUTH"] = "0"
+        # Milestone 12: every test in this file shares one client IP (127.0.0.1) across many
+        # requests within one pytest run's short wall-clock window -- disabled here so the rate
+        # limiter's own default doesn't make unrelated API tests flaky. Re-enabled explicitly (and
+        # ratelimit._WINDOWS cleared) by the tests that actually exercise rate limiting.
+        os.environ["RATE_LIMIT_REQUESTS"] = "0"
         for k in env_keys:
-            if k != "REQUIRE_AUTH": os.environ.pop(k, None)
+            if k not in ("REQUIRE_AUTH", "RATE_LIMIT_REQUESTS"): os.environ.pop(k, None)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Api)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -344,6 +350,39 @@ class CompanyProfilesAndMatchingTests(ApiTestBase):
         status, matches = self.request("GET", f"/company-profiles/{profile['id']}/matches?min_score=0.1")
         self.assertEqual(status, 200)
         self.assertEqual(matches, [])
+
+
+class RateLimitApiTests(ApiTestBase):
+    """Milestone 12 (audit §13). ApiTestBase.setUp() disables rate limiting for every other test
+    in this file (see its comment) -- these tests explicitly re-enable it and clear shared
+    ratelimit._WINDOWS state first, since every test here connects from the same 127.0.0.1."""
+    def setUp(self):
+        super().setUp()
+        ratelimit._WINDOWS.clear()
+        os.environ["RATE_LIMIT_REQUESTS"] = "3"
+        os.environ["RATE_LIMIT_WINDOW_SECONDS"] = "60"
+
+    def tearDown(self):
+        ratelimit._WINDOWS.clear()
+
+    def test_requests_within_limit_succeed(self):
+        for _ in range(3):
+            status, _ = self.request("GET", "/sources")
+            self.assertEqual(status, 200)
+
+    def test_request_past_limit_is_429_with_retry_after(self):
+        for _ in range(3): self.request("GET", "/sources")
+        try:
+            urllib.request.urlopen(self.url("/sources"), timeout=5)
+            self.fail("expected the 4th request in the window to be rate-limited")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 429)
+            self.assertIsNotNone(exc.headers.get("Retry-After"))
+
+    def test_health_endpoint_is_exempt_from_rate_limiting(self):
+        for _ in range(10):
+            status, _ = self.request("GET", "/health")
+            self.assertEqual(status, 200)
 
 
 if __name__ == "__main__":

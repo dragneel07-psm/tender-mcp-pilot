@@ -23,13 +23,23 @@ PROVINCES = {"1": "Koshi", "2": "Madhesh", "3": "Bagmati", "4": "Gandaki", "5": 
 
 
 def load_dotenv():
+    """Milestone 12: hardened slightly against audit §13's ".env parser has no quoting support"
+    gap -- a value wrapped in matching quotes (as many providers' dashboards paste API keys, e.g.
+    `ANTHROPIC_API_KEY="sk-..."`) now has the quotes stripped rather than becoming part of the
+    value. Splitting on the first "=" only (already the case) already handled a value containing
+    "=" correctly. Still no backslash-escape or multi-line-value support -- a genuine limitation,
+    not fabricated as fixed; values needing that stay out of scope for this hand-rolled parser
+    rather than growing it into a full dotenv reimplementation."""
     env_file = ROOT / ".env"
     if not env_file.exists():
         return
     for line in env_file.read_text().splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip())
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            os.environ.setdefault(key.strip(), value)
 
 
 load_dotenv()

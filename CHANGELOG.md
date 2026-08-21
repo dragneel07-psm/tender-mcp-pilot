@@ -1,5 +1,46 @@
 # Changelog
 
+## Milestone 12 — Security, observability, production hardening
+
+Scoped against what actually shipped in Milestones 1-11 (per the roadmap's own instruction),
+rather than the pre-Milestone-1 audit's gap list verbatim -- several of its Security (§13) items
+no longer apply (e.g. the ZIP-extraction attack surface it warned about was never built; Milestone
+3 stayed PDF-only) or were already fixed in passing (`load_dotenv()` already split on the first
+`=` correctly, contrary to the audit's specific claim).
+
+- **Rate limiting** (closes audit §13's "no rate limiting anywhere -- a leaked password allows
+  unlimited API hammering"): new `tender_monitor/ratelimit.py`, an in-process fixed-window counter
+  per client IP. Checked in `Api.rate_limited()` before `require_auth()` on every method handler,
+  so hammering is throttled regardless of whether the request would have authenticated. `/health`
+  is exempt (Railway's own healthcheck must never be capable of tripping this). In-process only,
+  deliberately -- this app runs as a single Railway replica (the Milestone 11 decision above), so
+  there's no need for shared state across instances, the same reasoning that already justified
+  `DB_WRITE_LOCK` being in-process. `RATE_LIMIT_REQUESTS=0` disables it entirely.
+- **`.env` parser hardening**: a value wrapped in matching quotes (`FOO="bar"`) now has the quotes
+  stripped -- some providers' dashboards paste API keys pre-quoted, and Milestone 10 just added
+  the first API key (`ANTHROPIC_API_KEY`) this project has ever needed to handle. Splitting on the
+  first `=` was already correct (verified, not just assumed) contrary to the audit's claim; still
+  no backslash-escape or multi-line-value support, documented as a real limitation rather than
+  silently left unaddressed.
+- **Per-cycle log correlation IDs** (target spec §21): `scheduler.py` generates a short id per
+  collection cycle, printed on every log line that cycle emits and exposed as `cycle_id` on
+  `GET /collection/status`, so a dashboard-visible failure can be matched back to its exact
+  Railway log lines without timestamp-window guessing.
+- **Per-user accounts**: explicitly scoped out, not silently skipped. The roadmap's own condition
+  for this work ("if multi-operator use has materialized by this point") isn't met -- this remains
+  a single-operator pilot behind one shared `APP_USERNAME`/`APP_PASSWORD`, and nothing shipped in
+  Milestones 1-11 introduced a multi-user concept to build accounts against.
+- The "metrics list from target spec §21" item is **not implemented**: that spec section's exact
+  contents aren't available in this session, and inventing a plausible-sounding metrics list to
+  claim the item as done would be exactly the kind of fabrication engineering rule #2 forbids.
+  `GET /collection/status` (existing) plus the new `cycle_id` are what shipped instead.
+- Test suite: 213 → 230. New `tests/test_ratelimit.py` (window/limit/reset/disable/per-IP
+  isolation/bounded-memory) and `tests/test_config.py` (quote-stripping, `=`-in-value
+  preservation, malformed-quote fallback, no-override-of-real-env-vars), plus rate-limit-specific
+  API coverage in `tests/test_api.py` (429 + `Retry-After`, `/health` exemption) -- rate limiting
+  is disabled by default across every *other* test in that file (shared 127.0.0.1 client IP across
+  many requests within one test run would otherwise make unrelated tests flaky).
+
 ## Milestone 11 — PostgreSQL/queue migration decision: not yet
 
 Per target spec §24 and the "do not migrate for fashion" engineering rule, this milestone's

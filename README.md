@@ -71,6 +71,14 @@ When a notice has a known `submission_deadline` (Milestone 3, document intellige
 
 Off by default (`AI_EXTRACTION_ENABLED=0`), and only reachable when `DOCUMENT_PROCESSING_ENABLED=1` (it works from a document's already-extracted text). When on, and an AI provider is configured (`AI_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`), each genuinely new notice with usable document text gets one bounded LLM call (`AI_EXTRACTION_LIMIT` per source per cycle) to extract `estimated_amount`, `bid_security_amount`, and `eligibility_summary` -- the fields Milestone 3's regex-based extraction deliberately left null because attributing the right monetary figure without real language understanding is unreliable. These fields have no other writer anywhere in the codebase, so their presence is itself the provenance tag: never confused with a source-derived or rule-based value, and never overwritten once set. `tender_monitor/ai.py`'s `AIProvider` interface is provider-independent; `AnthropicProvider` (plain `urllib`, no new dependency) is the only implementation today.
 
+## Production hardening
+
+- **Rate limiting**: every API endpoint except `/health` is limited per client IP (`RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_SECONDS`, default 120/60s), checked before authentication so a leaked password can't be used to hammer the API past this either. In-process, single-replica-only (see the Milestone 11 database-migration decision below) -- returns `429` with a `Retry-After` header.
+- **`.env` parsing**: values wrapped in matching quotes (`FOO="bar"`) now have the quotes stripped, since some providers' dashboards paste API keys pre-quoted. Splitting on the first `=` (so a value containing `=` survives intact) was already correct. No backslash-escape or multi-line-value support -- a real, documented limitation of this hand-rolled parser, not something to route around by growing it further.
+- **Per-cycle log correlation**: every collection cycle gets a short id (e.g. `[a1b2c3d4]`), printed on every log line that cycle emits and exposed as `cycle_id` on `GET /collection/status`, so a dashboard-visible failure can be matched back to its exact Railway log lines.
+- **Per-user accounts**: intentionally not built. This remains a single-operator pilot (one shared `APP_USERNAME`/`APP_PASSWORD`); the roadmap's own condition for this work ("if multi-operator use has materialized") hasn't been met by anything shipped in Milestones 1-11.
+- **Database migration**: see `CHANGELOG.md`'s Milestone 11 entry -- a documented "not yet" decision against real production evidence (replica count, row count, `tenders.db` size), not a deferred TODO.
+
 ## Cloud deployment: Railway
 
 The Railway service runs the collector, database, source registry, dashboard, and WhatsApp delivery — there is no separate frontend host.
