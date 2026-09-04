@@ -9954,5 +9954,22 @@
       "खरिद"
     ],
     "province": "Gandaki"
+  },
+  {
+    "id": "sp-3b66eaad8d26",
+    "name": "Bolpatra (PPMO e-GP)",
+    "url": "https://bolpatra.gov.np/egp/",
+    "notice_url": "https://bolpatra.gov.np/egp/searchOpportunity",
+    "keywords": [
+      "tender",
+      "bid",
+      "bolpatra",
+      "बोलपत्र",
+      "दरभाउ",
+      "खरिद",
+      "expression of interest"
+    ],
+    "favorite": true,
+    "province": "National / other"
   }
 ]

@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import urllib.parse
 
-from .config import COMPANY_PROFILES, DB, SOURCES, WATCHLISTS
+from .config import ALL_PROVINCES, COMPANY_PROFILES, DASHBOARD_SETTINGS, DB, SOURCES, WATCHLISTS
 from .parsing import classify_categories, classify_notice_type, clean, status_for_notice_type
 
 # SQLite allows only one writer at a time; under WAL, concurrent writers past that point block on
@@ -223,6 +223,32 @@ def company_profiles():
     try: return json.loads(COMPANY_PROFILES.read_text())
     except json.JSONDecodeError: return []
 def save_company_profiles(items): save_json(COMPANY_PROFILES, items)
+
+
+# Milestone 13: which provinces show in the dashboard's "Local governments" section and its
+# default notice feed. A missing/corrupt file (fresh checkout with no dashboard_settings.json, or
+# a hand-edited one that no longer parses) falls back to "every known province enabled" rather
+# than an empty dashboard -- same never-silently-hide-everything reasoning as watchlists()/
+# company_profiles() falling back to [] instead of raising.
+def dashboard_settings():
+    if not DASHBOARD_SETTINGS.exists(): return {"enabled_provinces": list(ALL_PROVINCES)}
+    try: data = json.loads(DASHBOARD_SETTINGS.read_text())
+    except json.JSONDecodeError: return {"enabled_provinces": list(ALL_PROVINCES)}
+    if not isinstance(data, dict) or not isinstance(data.get("enabled_provinces"), list):
+        return {"enabled_provinces": list(ALL_PROVINCES)}
+    # Drop any stale/unknown entries silently rather than erroring a GET over them -- PATCH is
+    # where an unknown province is rejected (see validate_dashboard_settings).
+    return {"enabled_provinces": [value for value in data["enabled_provinces"] if value in ALL_PROVINCES]}
+def save_dashboard_settings(payload): save_json(DASHBOARD_SETTINGS, payload)
+
+
+def validate_dashboard_settings(payload, current=None):
+    enabled = payload.get("enabled_provinces", current.get("enabled_provinces", list(ALL_PROVINCES)) if current else list(ALL_PROVINCES))
+    if not isinstance(enabled, list): raise ValueError("enabled_provinces must be a list.")
+    cleaned = [clean(str(value)) for value in enabled if clean(str(value))]
+    unknown = sorted({value for value in cleaned if value not in ALL_PROVINCES})
+    if unknown: raise ValueError(f"Unknown province: {', '.join(unknown)}. Choose from: {', '.join(ALL_PROVINCES)}.")
+    return {"enabled_provinces": list(dict.fromkeys(cleaned))}
 
 
 def _string_list(value):

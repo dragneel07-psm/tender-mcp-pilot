@@ -16,10 +16,21 @@ if not WATCHLISTS.exists() and (ROOT / "watchlists.json").exists():
 COMPANY_PROFILES = DATA_DIR / "company_profiles.json"
 if not COMPANY_PROFILES.exists() and (ROOT / "company_profiles.json").exists():
     COMPANY_PROFILES.write_text((ROOT / "company_profiles.json").read_text())
+# Milestone 13: which provinces the dashboard's "Local governments" section shows by default --
+# same bootstrap-copy-once pattern. Lets a province be dropped from view without deleting its
+# sources, and brought back later, instead of bulk add/remove across dozens of source records.
+DASHBOARD_SETTINGS = DATA_DIR / "dashboard_settings.json"
+if not DASHBOARD_SETTINGS.exists() and (ROOT / "dashboard_settings.json").exists():
+    DASHBOARD_SETTINGS.write_text((ROOT / "dashboard_settings.json").read_text())
 
 USER_AGENT = "SudurpashchimTenderMonitor/0.1 (company pilot; contact: admin@example.com)"
 TENDER_WORDS = ("tender", "bid", "bidding", "procurement", "bolpatra", "बोलपत्र", "दरभाउ", "खरिद", "आशय")
 PROVINCES = {"1": "Koshi", "2": "Madhesh", "3": "Bagmati", "4": "Gandaki", "5": "Lumbini", "6": "Karnali", "7": "Sudurpashchim"}
+# The full set of province labels a source can carry, including the non-geographic bucket for
+# national-level sources (e.g. Jobs Nepal, Bolpatra) -- matches dashboard.html's own PROVINCES
+# list and storage.validate_source's default. Not every one of these has a source today; this is
+# the vocabulary dashboard_settings.enabled_provinces is validated against.
+ALL_PROVINCES = tuple(PROVINCES.values()) + ("National / other",)
 
 
 def load_dotenv():
