@@ -56,6 +56,7 @@ class Api(BaseHTTPRequestHandler):
             self.send_response(200); self.security_headers(); self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data); return
         if path == "/health": return self.respond({"status":"ok"})
         if path == "/sources": return self.respond(queries.source_summary())
+        if path == "/settings": return self.respond(storage.dashboard_settings())
         if path == "/watchlists": return self.respond(storage.watchlists())
         watchlist_notices_match=re.fullmatch(r"/watchlists/(wl-[a-f0-9]+)/notices", path)
         if watchlist_notices_match:
@@ -141,6 +142,13 @@ class Api(BaseHTTPRequestHandler):
     def do_PATCH(self):
         if self.rate_limited(): return
         if not self.require_auth(): return
+        if self.path == "/settings":
+            try:
+                payload=self.json_body()
+                with storage.REGISTRY_WRITE_LOCK:
+                    result=storage.validate_dashboard_settings(payload, storage.dashboard_settings()); storage.save_dashboard_settings(result)
+                return self.respond(result)
+            except (ValueError, json.JSONDecodeError) as exc: return self.respond({"error":str(exc)},400)
         watchlist_match=re.fullmatch(r"/watchlists/(wl-[a-f0-9]+)", self.path)
         if watchlist_match:
             try:
