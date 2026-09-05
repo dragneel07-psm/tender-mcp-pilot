@@ -60,8 +60,12 @@ class DownloadAndExtractTests(unittest.TestCase):
         return _mock_response(data)
 
     def test_successful_pdf_is_extracted(self):
+        """The plain pypdf path (Milestone 3), independent of OCR -- explicitly forced off here so
+        this test's outcome doesn't depend on OCR_ENABLED in whatever environment it runs in (e.g.
+        a developer's local .env with OCR turned on for real testing, per Milestone 15)."""
         pdf_bytes = _make_pdf_bytes()
-        with mock.patch("urllib.request.urlopen", return_value=self._mock_response(pdf_bytes)):
+        with mock.patch("urllib.request.urlopen", return_value=self._mock_response(pdf_bytes)), \
+             mock.patch("tender_monitor.ocr.available", return_value=False):
             result = documents.download_and_extract("https://example.gov.np/notice.pdf")
         self.assertIn(result["extraction_status"], ("ok", "empty_text_likely_scanned"))
         self.assertIsNotNone(result["sha256"])
