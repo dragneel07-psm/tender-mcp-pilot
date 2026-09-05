@@ -40,6 +40,9 @@ class MigrationFromOldSchemaTests(unittest.TestCase):
         raw.execute("insert into notices values (?,?,?,?,?,?,?,?,?,?)",
                     ("n3", "sp-unknown-source", "Some Deleted Source", "Old notice from a since-removed source",
                      "https://gone.gov.np/1", "2026-01-03T00:00:00+00:00", 1, "Old notice from a since-removed source", None, None))
+        raw.execute("insert into notices values (?,?,?,?,?,?,?,?,?,?)",
+                    ("n4", "sp-dhangadhi", "Dhangadhi Sub-Metropolitan City", "Supply and installation of CCTV cameras",
+                     "https://dhangadhimun.gov.np/4", "2026-01-04T00:00:00+00:00", 1, "Supply and installation of CCTV cameras", None, None))
         raw.commit(); raw.close()
 
     def tearDown(self):
@@ -49,7 +52,7 @@ class MigrationFromOldSchemaTests(unittest.TestCase):
         db = storage.conn()
         count = db.execute("select count(*) from notices").fetchone()[0]
         db.close()
-        self.assertEqual(count, 3)
+        self.assertEqual(count, 4)
 
     def test_organization_backfilled_from_authority(self):
         db = storage.conn()
@@ -125,6 +128,19 @@ class MigrationFromOldSchemaTests(unittest.TestCase):
         row = db.execute("select estimated_amount, bid_security_amount, eligibility_summary, ai_provider, ai_extraction_status, ai_extracted_at from notices where id='n1'").fetchone()
         db.close()
         self.assertTrue(all(value is None for value in row))
+
+    def test_priority_column_backfilled_from_title(self):
+        """Milestone 14: unlike the AI columns above, priority IS backfillable -- it's derived
+        purely from title text (parsing.is_priority_notice), which every pre-existing row already
+        has. n1/n2 have no ICT/electronics/machinery keyword -> 0; n4's CCTV title -> 1."""
+        db = storage.conn()
+        n1 = db.execute("select priority from notices where id='n1'").fetchone()
+        n2 = db.execute("select priority from notices where id='n2'").fetchone()
+        n4 = db.execute("select priority from notices where id='n4'").fetchone()
+        db.close()
+        self.assertEqual(n1["priority"], 0)
+        self.assertEqual(n2["priority"], 0)
+        self.assertEqual(n4["priority"], 1)
 
     def test_migration_runs_exactly_once_not_on_every_connection(self):
         db1 = storage.conn()

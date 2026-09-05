@@ -361,6 +361,36 @@ class CollectionHealthTests(unittest.TestCase):
         finally:
             os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
 
+    def test_document_processing_routes_a_linked_photo_notice_through_ocr_not_pdf_extraction(self):
+        """Milestone 15: _discover_notice_documents dispatches a discovered attachment to
+        download_and_extract_image (OCR path), not download_and_extract (pypdf path), based on the
+        link's extension -- this is the collector-level wiring test; documents.py's own OCR
+        behavior is covered directly in test_documents.py/test_ocr.py."""
+        os.environ["DOCUMENT_PROCESSING_ENABLED"] = "1"
+        try:
+            listing_html = '<a href="/n/1">Road construction bolpatra notice</a>'
+            notice_page_html = '<a href="/notices/scan.jpg">Scanned Notice</a>'
+            def fake_fetch(url, timeout=None, retries=None):
+                if url == "https://example.gov.np/notices": return listing_html
+                return notice_page_html
+            fake_doc = {"url": "https://example.gov.np/notices/scan.jpg", "sha256": "abc123",
+                        "size_bytes": 100, "content_type": "image/jpeg",
+                        "extracted_text": "CCTV camera procurement notice", "extraction_status": "ok_ocr"}
+            with mock.patch.object(net, "fetch", side_effect=fake_fetch), \
+                 mock.patch.object(documents, "download_and_extract_image", return_value=dict(fake_doc)) as image_mock, \
+                 mock.patch.object(documents, "download_and_extract") as pdf_mock:
+                result = collector.collect_one(self.source())
+            self.assertEqual(result["status"], "ok")
+            image_mock.assert_called_once_with("https://example.gov.np/notices/scan.jpg")
+            pdf_mock.assert_not_called()
+            notice = queries.list_notices(source_id="test-source")[0]
+            docs = queries.notice_documents(notice["id"])
+            self.assertEqual(len(docs), 1)
+            self.assertEqual(docs[0]["content_type"], "image/jpeg")
+            self.assertEqual(docs[0]["extraction_status"], "ok_ocr")
+        finally:
+            os.environ.pop("DOCUMENT_PROCESSING_ENABLED", None)
+
     # -- Milestone 10: AI extraction wiring ---------------------------------------------------
 
     def _collect_with_document(self, extracted_text="Estimated cost: NPR 5,000,000. Bid security: NPR 100,000."):

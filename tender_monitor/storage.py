@@ -8,7 +8,7 @@ import threading
 import urllib.parse
 
 from .config import ALL_PROVINCES, COMPANY_PROFILES, DASHBOARD_SETTINGS, DB, SOURCES, WATCHLISTS
-from .parsing import classify_categories, classify_notice_type, clean, status_for_notice_type
+from .parsing import classify_categories, classify_notice_type, clean, is_priority_notice, status_for_notice_type
 
 # SQLite allows only one writer at a time; under WAL, concurrent writers past that point block on
 # the busy handler and can still hit "database is locked" once enough threads are writing at once
@@ -53,8 +53,13 @@ NOTICES_MIGRATION_COLUMNS = (
     # unambiguously means an AI model produced it, never a rule-based or source-derived value.
     ("estimated_amount", "text"), ("bid_security_amount", "text"), ("eligibility_summary", "text"),
     ("ai_provider", "text"), ("ai_extraction_status", "text"), ("ai_extracted_at", "text"),
+    # Milestone 14: ICT/electronics/machinery keyword flag (parsing.is_priority_notice). Backfilled
+    # below like notice_type/status -- title text is always present, so this is as derivable for an
+    # old row as for a new one. A document-text match (collector.py, once a PDF is downloaded) can
+    # only ever raise 0->1, never overwrite a document-derived 1 back to 0.
+    ("priority", "integer"),
 )
-BACKFILLABLE_COLUMNS = ("organization", "province", "notice_type", "status", "first_seen", "last_seen")
+BACKFILLABLE_COLUMNS = ("organization", "province", "notice_type", "status", "first_seen", "last_seen", "priority")
 
 # Whether the one-time notice_categories backfill has been checked yet in this process. Checked at
 # most once per process lifetime (not per conn() call) since count(*) over a 6,000+ row table on
@@ -189,6 +194,9 @@ def _backfill_notices_schema(db, backfillable_columns):
             notice_type = classify_notice_type(row["title"])
             db.execute("update notices set notice_type = coalesce(notice_type, ?), status = coalesce(status, ?) where id = ?",
                        (notice_type, status_for_notice_type(notice_type), row["id"]))
+    if "priority" in backfillable_columns:
+        for row in db.execute("select id, title from notices where priority is null").fetchall():
+            db.execute("update notices set priority = ? where id = ?", (1 if is_priority_notice(row["title"]) else 0, row["id"]))
 
 
 def source_id(name): return "sp-" + hashlib.sha1(name.encode()).hexdigest()[:12]

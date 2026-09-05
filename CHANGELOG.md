@@ -1,5 +1,76 @@
 # Changelog
 
+## Milestone 15 — OCR for scanned PDFs and photo notices
+
+Documents.py's Milestone 3 text extraction only ever read a PDF's real text layer -- a scanned
+notice (photographed or scanned to PDF with no text underneath) or a directly-attached photo of a
+notice board yielded nothing, by design (`empty_text_likely_scanned`, never guessed at). This adds
+an opt-in OCR fallback for both cases.
+
+- New `tender_monitor/ocr.py`: `OCR_ENABLED` (default off) gates everything; `available()` also
+  confirms pytesseract/Pillow import cleanly AND a real `tesseract` binary responds, caching that
+  probe per process since it shells out. Every entry point is best-effort and never raises, same
+  contract as the rest of the document pipeline.
+- `documents.download_and_extract` (PDF path): when the text layer comes back empty, and only then,
+  falls back to OCR via `_ocr_scanned_pdf` -- pulls each page's embedded raster image(s) through
+  pypdf's own `page.images` (no poppler/PyMuPDF page-rendering dependency needed; a scanned PDF is
+  almost always one full-page image per page) and OCRs each, bounded by `OCR_MAX_PAGES`. Distinct
+  honest outcomes: `ok_ocr` (OCR recovered text), `empty_after_ocr` (OCR ran, found nothing -- not
+  conflated with "never tried"), or the pre-existing `empty_text_likely_scanned` when OCR is
+  unavailable/disabled.
+- New `documents.download_and_extract_image` (and `discover_image_links`, matching
+  `discover_pdf_links`'s "explicit `<a href>` attachment links only, not inline `<img>` tags on the
+  page" scoping): the photo-notice counterpart, same SSRF/size-cap/magic-byte-verification posture
+  as the PDF path (refactored into a shared `_download` helper), OCR'd directly rather than via
+  pypdf. `collector._discover_notice_documents` now discovers and dispatches both PDF and image
+  attachments -- including when a notice's own listing URL is itself an image.
+- `requirements.txt`: `pytesseract`, `Pillow`. Both are pure Python and install with zero build
+  steps; OCR itself needs the `tesseract` binary as a real system dependency, which is NOT
+  installed by `pip install`. New `nixpacks.toml` adds it to Railway's build (`OCR_ENABLED` still
+  defaults to 0, so an unmodified deployment's behavior doesn't change). Locally: `brew install
+  tesseract` / `apt-get install tesseract-ocr`.
+- `.env.example`: `OCR_ENABLED`, `OCR_MAX_PAGES`, `OCR_LANGUAGES` (nixpkgs' `tesseract` package
+  bundles English trained data only -- Nepali OCR needs that language's tessdata installed too,
+  documented as a real limitation, not claimed as working out of the box).
+- Test suite: 246 → 278. New `tests/test_ocr.py` (enabled/available gating and caching, both OCR
+  entry points mocked, plus a real-tesseract integration test skipped when the binary isn't
+  installed), new coverage in `tests/test_documents.py` (image magic-byte sniffing, image link
+  discovery, both scanned-PDF-OCR and photo-OCR outcome paths), and a collector-level wiring test
+  in `tests/test_collection_health.py` confirming an image attachment routes to
+  `download_and_extract_image`, not the PDF path.
+
+## Milestone 14 — "Important" flagging for ICT/electronics/machinery notices
+
+A rule-based flag, independent of the general category taxonomy (`CATEGORY_KEYWORDS`), for notices
+this pilot's users specifically don't want to miss: ICT, computer, e-attendance, networking,
+printer, CCTV, smartboard, machinery, and electronics procurement.
+
+- `parsing.PRIORITY_KEYWORDS`/`is_priority_notice()`: flat substring match (English + Nepali), same
+  honesty posture as `CATEGORY_KEYWORDS` -- "one of these words appeared", nothing more precise
+  claimed.
+- New `notices.priority` column (additive migration), computed from the title at insert time
+  (`adapters.py`) and backfilled for pre-existing rows the same way `notice_type`/`status` are
+  (deterministic from title text, unlike the AI columns, which stay unbackfilled). Escalated
+  0→1 -- never the reverse -- once a linked document's extracted text matches, even when the title
+  alone didn't ("Sealed quotation invited -- see attached specification").
+- `GET /notices?priority=true|false` (`queries.list_notices`), same tri-state convention as the
+  existing `unread` filter.
+- Dashboard: a gold "★ Important" badge and highlighted card border on a matching notice, plus an
+  "Important only" toggle next to "Unread only" in the notices toolbar.
+- Test suite: 230 → 246. New `IsPriorityNoticeTests` (`tests/test_parsing.py`), a priority-backfill
+  test in `tests/test_migration.py`, and a `/notices?priority=` filter test in `tests/test_api.py`.
+
+## Milestone 13 — Toggleable province visibility, focus on Sudurpashchim/Karnali
+
+Provinces in the "Local governments" dashboard can be hidden and re-added without deleting their
+sources, backed by a new persisted setting (`dashboard_settings.json`, same bootstrap-copy-once
+pattern as `sources.json`/`watchlists.json`) rather than a hardcoded list. `GET`/`PATCH /settings`
+expose `enabled_provinces`, validated against the known province vocabulary. Shipped default:
+`[Sudurpashchim, Karnali, National / other]`. Also added a Bolpatra (PPMO e-GP) source under
+National / other, alongside the existing Jobs Nepal source, so enabling that bucket surfaces both.
+No new tests (UI + a straightforward settings CRUD endpoint; the existing 230 continued to pass
+unchanged) -- see commit 3c6b544 for the full breakdown.
+
 ## Milestone 12 — Security, observability, production hardening
 
 Scoped against what actually shipped in Milestones 1-11 (per the roadmap's own instruction),

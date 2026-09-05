@@ -211,3 +211,31 @@ def classify_categories(title):
     matches=[category for category, keywords in CATEGORY_KEYWORDS if any(k.lower() in lower for k in keywords)]
     if not matches: return [("Other", UNCATEGORIZED_CONFIDENCE)]
     return [(category, CATEGORY_MATCH_CONFIDENCE) for category in matches]
+
+
+# Milestone 14: a narrower, higher-signal keyword set than CATEGORY_KEYWORDS above -- flags a
+# notice as one this pilot's users specifically care not to miss (ICT/electronics/office-machinery
+# procurement), independent of the general category taxonomy. Checked against the title at insert
+# time (is_priority_notice below) and again against a document's extracted text once one is
+# downloaded (collector.py) -- a notice can start out not looking like a match on its title alone
+# ("Sealed quotation invited -- see attached specification") and only reveal it in the PDF's item
+# list. Same flat, rule-based, substring-match approach as CATEGORY_KEYWORDS: no false claim of
+# precision beyond "one of these words appeared".
+PRIORITY_KEYWORDS = (
+    "ict", "information and communication technology", "computer", "कम्प्युटर",
+    "e-attendance", "eattendance", "e attendance", "attendance machine", "biometric attendance",
+    "networking", "network", "नेटवर्क",
+    "printer", "प्रिन्टर",
+    "cctv", "सिसिटिभी", "सीसीटीभी",
+    "smartboard", "smart board", "interactive board",
+    "machinery", "मेसिनरी", "मेशिनरी",
+    "electronics", "electronic equipment", "electronic item", "electronic goods", "इलेक्ट्रोनिक",
+)
+
+
+def is_priority_notice(text):
+    """True if `text` (a title, or a document's extracted text) mentions any PRIORITY_KEYWORDS
+    term. A missing/empty text is simply not a match -- never guessed at."""
+    if not text: return False
+    lower=text.lower()
+    return any(keyword in lower for keyword in PRIORITY_KEYWORDS)
