@@ -9,6 +9,7 @@ degrade to "no OCR text" rather than crashing a collection cycle -- documents.do
 own "never raise" contract applies just as much to its OCR fallback.
 """
 import os
+import threading
 
 
 def enabled():
@@ -17,7 +18,13 @@ def enabled():
 
 # Whether available() has already probed for a real tesseract binary this process, and what it
 # found. Cached rather than re-checked per call: get_tesseract_version() shells out, and
-# download_and_extract/_image can be called many times per collection cycle.
+# download_and_extract/_image can be called many times per collection cycle -- including
+# concurrently, from collector.py's per-notice ThreadPoolExecutor. _check_lock guards the
+# check-then-set below with the same double-checked-locking shape as storage.py's
+# SCHEMA_MIGRATION_LOCK: without it, a second thread could read _checked=True (set by the first
+# thread right before it actually determines _usable) and wrongly return the stale _usable=False --
+# a real race this project's own live-tested collection cycle hit before this lock was added.
+_check_lock = threading.Lock()
 _checked = False
 _usable = False
 
@@ -27,18 +34,21 @@ def available():
     actually callable. Checked lazily, not at module import time, so a deployment that never sets
     OCR_ENABLED never imports pytesseract/Pillow or shells out to probe for a tesseract binary it
     has no use for -- same "gate on the env flag first" posture as ai.configured_provider(), though
-    unlike that function this result is cached per process: confirming a real tesseract binary
-    means shelling out (get_tesseract_version()), and this can be called many times per cycle."""
+    unlike that function this result is cached (thread-safely -- see _check_lock above) per
+    process: confirming a real tesseract binary means shelling out (get_tesseract_version()), and
+    this can be called many times per cycle, from several threads at once."""
     global _checked, _usable
     if not enabled(): return False
     if _checked: return _usable
-    _checked = True
-    try:
-        import pytesseract
-        pytesseract.get_tesseract_version()
-        _usable = True
-    except Exception:
-        _usable = False
+    with _check_lock:
+        if _checked: return _usable  # re-check: another thread may have finished while we waited
+        try:
+            import pytesseract
+            pytesseract.get_tesseract_version()
+            _usable = True
+        except Exception:
+            _usable = False
+        _checked = True
     return _usable
 
 

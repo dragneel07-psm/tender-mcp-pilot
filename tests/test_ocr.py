@@ -3,6 +3,8 @@ except OcrIntegrationTests, which is skipped unless one is actually installed on
 see documents.py's module docstring for why OCR isn't a hard dependency of this project."""
 import os
 import shutil
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -43,6 +45,27 @@ class EnabledAndAvailableTests(OcrTestBase):
         os.environ["OCR_ENABLED"] = "1"
         with mock.patch("pytesseract.get_tesseract_version", return_value="5.3.4"):
             self.assertTrue(ocr.available())
+
+    def test_concurrent_first_calls_never_see_the_stale_pre_probe_value(self):
+        """Regression test: collector.py's _discover_notice_documents runs concurrently across a
+        ThreadPoolExecutor, so several threads can call available() for the very first time at
+        once. A prior version of this function set _checked=True before determining _usable,
+        so a second thread landing in that window read _checked=True but _usable still False --
+        confirmed live against a real collection cycle before _check_lock was added. Every thread
+        here must see the correct, fully-determined result, never the pre-probe default."""
+        os.environ["OCR_ENABLED"] = "1"
+        def slow_probe():
+            time.sleep(0.05)  # widens the original race window so this reliably catches a regression
+            return "5.3.4"
+        results = []
+        def call_available():
+            results.append(ocr.available())
+        with mock.patch("pytesseract.get_tesseract_version", side_effect=slow_probe) as probe:
+            threads = [threading.Thread(target=call_available) for _ in range(8)]
+            for t in threads: t.start()
+            for t in threads: t.join()
+        self.assertTrue(all(results), f"some threads saw OCR as unavailable: {results}")
+        probe.assert_called_once()  # only one thread should have actually shelled out to tesseract
 
     def test_availability_check_is_cached_not_reprobed_every_call(self):
         os.environ["OCR_ENABLED"] = "1"
