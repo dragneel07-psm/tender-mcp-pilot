@@ -58,6 +58,7 @@ class GenericHtmlLinkAdapter(BaseTenderSource):
                 "published": published, "notice_type": notice_type,
                 "status": parsing.status_for_notice_type(notice_type),
                 "categories": parsing.classify_categories(title),
+                "priority": 1 if parsing.is_priority_notice(title) else 0,
                 "content_hash": hashlib.sha256(snippet.encode()).hexdigest() if snippet else None,
                 # Milestone 6: the raw snippet itself, not just its hash -- collector.py needs the
                 # actual text to classify *what* changed on a re-scrape (a changed hash alone only

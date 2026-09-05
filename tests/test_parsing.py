@@ -210,5 +210,57 @@ class ToCalendarDateTests(unittest.TestCase):
         self.assertIsNone(parsing.to_calendar_date("2026-13-40"))
 
 
+class IsPriorityNoticeTests(unittest.TestCase):
+    """Milestone 14: flags ICT/electronics/office-machinery notices as "very important" to this
+    pilot's users, independent of the general category taxonomy (CATEGORY_KEYWORDS)."""
+
+    def test_matches_ict_keyword(self):
+        self.assertTrue(parsing.is_priority_notice("Procurement of ICT equipment for district office"))
+
+    def test_matches_computer(self):
+        self.assertTrue(parsing.is_priority_notice("Supply of desktop computer sets"))
+
+    def test_matches_eattendance_variants(self):
+        self.assertTrue(parsing.is_priority_notice("Installation of e-attendance system"))
+        self.assertTrue(parsing.is_priority_notice("Purchase of eattendance machine"))
+
+    def test_matches_networking(self):
+        self.assertTrue(parsing.is_priority_notice("Networking cable and switch installation"))
+
+    def test_matches_printer(self):
+        self.assertTrue(parsing.is_priority_notice("Supply of printer and toner"))
+
+    def test_matches_cctv(self):
+        self.assertTrue(parsing.is_priority_notice("CCTV camera installation at ward office"))
+
+    def test_matches_smartboard(self):
+        self.assertTrue(parsing.is_priority_notice("Supply of smart board for classrooms"))
+
+    def test_matches_machinery(self):
+        self.assertTrue(parsing.is_priority_notice("Purchase of office machinery"))
+
+    def test_matches_electronics(self):
+        self.assertTrue(parsing.is_priority_notice("Procurement of electronics items"))
+
+    def test_matches_nepali_keyword(self):
+        self.assertTrue(parsing.is_priority_notice("कम्प्युटर तथा प्रिन्टर खरिद सम्बन्धी सूचना"))
+
+    def test_is_case_insensitive(self):
+        self.assertTrue(parsing.is_priority_notice("SMARTBOARD PROCUREMENT NOTICE"))
+
+    def test_unrelated_title_does_not_match(self):
+        self.assertFalse(parsing.is_priority_notice("Road construction tender for ward 5"))
+
+    def test_none_and_empty_input_do_not_match(self):
+        self.assertFalse(parsing.is_priority_notice(None))
+        self.assertFalse(parsing.is_priority_notice(""))
+
+    def test_checked_against_document_text_too_not_just_titles(self):
+        # The function itself is text-source-agnostic -- collector.py calls it a second time
+        # against a downloaded PDF's extracted_text, not just the notice title.
+        document_text = "Item list: 1. Steel rods 2. Cement 3. CCTV cameras with NVR 4. Cables"
+        self.assertTrue(parsing.is_priority_notice(document_text))
+
+
 if __name__ == "__main__":
     unittest.main()

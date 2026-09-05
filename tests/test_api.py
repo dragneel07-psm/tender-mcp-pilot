@@ -165,11 +165,11 @@ class SourcesEndpointTests(ApiTestBase):
 
 
 class NoticesEndpointTests(ApiTestBase):
-    def _seed_notice(self, notice_id="a"*64, source_id="src-1"):
+    def _seed_notice(self, notice_id="a"*64, source_id="src-1", title="A tender notice", priority=0):
         db = storage.conn()
-        db.execute("""insert into notices (id,source_id,authority,title,url,discovered_at,relevant,raw_text)
-                   values (?,?,?,?,?,?,?,?)""",
-                   (notice_id, source_id, "Authority", "A tender notice", "https://x/1", "2026-01-01T00:00:00+00:00", 1, "A tender notice"))
+        db.execute("""insert into notices (id,source_id,authority,title,url,discovered_at,relevant,raw_text,priority)
+                   values (?,?,?,?,?,?,?,?,?)""",
+                   (notice_id, source_id, "Authority", title, "https://x/1", "2026-01-01T00:00:00+00:00", 1, title, priority))
         db.commit(); db.close()
 
     def test_list_notices_returns_seeded_row(self):
@@ -206,6 +206,21 @@ class NoticesEndpointTests(ApiTestBase):
         self.assertEqual(unread, [])
         status, read = self.request("GET", "/notices?unread=false")
         self.assertEqual(len(read), 1)
+
+    def test_priority_query_param_filters_notices(self):
+        """Milestone 14: the "Important only" dashboard toggle -- notices.priority is set at
+        collection time from parsing.is_priority_notice (title, and later a document's extracted
+        text); this test only exercises the /notices?priority= read side, seeding the flag
+        directly rather than re-testing is_priority_notice's keyword matching (see test_parsing.py)."""
+        self._seed_notice(notice_id="a"*64, title="Supply of CCTV cameras", priority=1)
+        self._seed_notice(notice_id="b"*64, title="Road construction tender", priority=0)
+        status, important = self.request("GET", "/notices?priority=true")
+        self.assertEqual(status, 200)
+        self.assertEqual([n["id"] for n in important], ["a"*64])
+        status, rest = self.request("GET", "/notices?priority=false")
+        self.assertEqual([n["id"] for n in rest], ["b"*64])
+        status, everything = self.request("GET", "/notices")
+        self.assertEqual(len(everything), 2)
 
     def test_changes_for_unknown_notice_is_404(self):
         status, payload = self.request("GET", f"/notices/{'f'*64}/changes")
