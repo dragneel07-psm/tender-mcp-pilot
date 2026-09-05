@@ -3,3 +3,12 @@
 # build with zero extra config. Pinned to an exact version for a reproducible build; see
 # CHANGELOG.md for why OCR (e.g. pytesseract) was deliberately not added in this milestone.
 pypdf==6.16.1
+# Milestone 15: OCR fallback for scanned PDFs (via pypdf's own page.images -- no poppler/PyMuPDF
+# page-rendering dependency needed) and photo notices. pytesseract is a thin wrapper that shells
+# out to the `tesseract` binary, which is NOT a Python package and must be installed separately on
+# the host -- see nixpacks.toml for the Railway build, or `brew install tesseract`/
+# `apt-get install tesseract-ocr` locally. Both packages install cleanly with zero build steps of
+# their own; the OCR feature stays off (OCR_ENABLED=0) and ocr.available() returns False until the
+# tesseract binary is actually present, so installing these two alone changes no existing behavior.
+pytesseract==0.3.13
+Pillow==12.3.0

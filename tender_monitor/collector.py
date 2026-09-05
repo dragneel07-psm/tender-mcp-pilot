@@ -69,19 +69,25 @@ def _run_ai_extraction(candidates, now):
 
 
 def _discover_notice_documents(notice):
-    """Find and download this notice's PDF document(s). Best-effort: never raises -- a document
-    failure must not affect the notice, which is already inserted by the time this runs."""
+    """Find and download this notice's PDF and/or image document(s) -- images since Milestone 15
+    (photo notices, OCR'd via documents.download_and_extract_image; see ocr.py). Best-effort: never
+    raises -- a document failure must not affect the notice, which is already inserted by the time
+    this runs."""
     try:
         url = notice["url"]
-        if url.lower().split("?", 1)[0].endswith(".pdf"):
-            links = [(url, notice["title"])]
+        url_path = url.lower().split("?", 1)[0]
+        if url_path.endswith(".pdf"):
+            links = [(url, notice["title"], "pdf")]
+        elif url_path.endswith(documents.IMAGE_EXTENSIONS):
+            links = [(url, notice["title"], "image")]
         else:
             timeout = int(os.getenv("DOCUMENT_DOWNLOAD_TIMEOUT_SECONDS", "20"))
             page = net.fetch(url, timeout=timeout, retries=1)
-            links = documents.discover_pdf_links(page, url)
+            links = [(u, t, "pdf") for u, t in documents.discover_pdf_links(page, url)] + \
+                    [(u, t, "image") for u, t in documents.discover_image_links(page, url)]
         results = []
-        for link_url, link_text in links[:3]:  # cap documents per notice, independent of the per-source cap below
-            extracted = documents.download_and_extract(link_url)
+        for link_url, link_text, kind in links[:3]:  # cap documents per notice, independent of the per-source cap below
+            extracted = documents.download_and_extract_image(link_url) if kind == "image" else documents.download_and_extract(link_url)
             extracted["document_type"] = documents.classify_document_type(link_text)
             results.append(extracted)
         return results
@@ -104,10 +110,10 @@ def collect_one(source):
                 for c in candidates:
                     db.execute("""insert or ignore into notices
                         (id,source_id,authority,title,url,discovered_at,published_at,relevant,raw_text,
-                         organization,province,notice_type,status,first_seen,last_seen,content_hash,confidence_score)
-                        values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         organization,province,notice_type,status,first_seen,last_seen,content_hash,confidence_score,priority)
+                        values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (c["id"],source["id"],source["name"],c["title"],c["url"],now,c["published"],1,c["title"],
-                         c["organization"],c["province"],c["notice_type"],c["status"],now,now,c["content_hash"],c["confidence_score"]))
+                         c["organization"],c["province"],c["notice_type"],c["status"],now,now,c["content_hash"],c["confidence_score"],c["priority"]))
                     inserted = db.execute("select changes()").fetchone()[0]
                     if not inserted:
                         # Already on file from an earlier cycle: it's still listed on the source's
@@ -193,6 +199,13 @@ def collect_one(source):
                                     deadline=documents.extract_submission_deadline(doc["extracted_text"])
                                     if deadline:
                                         db.execute("update notices set submission_deadline=coalesce(submission_deadline,?) where id=?", (deadline,notice["id"]))
+                                    # Milestone 14: the title alone may not mention ICT/electronics/
+                                    # machinery even when the attached document's item list does
+                                    # ("Sealed quotation invited -- see attached specification").
+                                    # Only ever raises 0->1 (`or priority`), never clears a flag the
+                                    # title-only check already set.
+                                    if parsing.is_priority_notice(doc["extracted_text"]):
+                                        db.execute("update notices set priority=1 where id=?", (notice["id"],))
                                     ai_candidates.setdefault(notice["id"], (notice, doc["extracted_text"]))
                         db.commit()
                     finally: db.close()

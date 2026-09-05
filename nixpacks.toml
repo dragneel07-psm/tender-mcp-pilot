@@ -1,0 +1,8 @@
+# Milestone 15: the `tesseract` binary OCR needs (pytesseract just shells out to it -- it isn't a
+# Python package). Added to the Nix build environment unconditionally so it's present if OCR_ENABLED
+# is ever turned on in Railway's variables; this alone does NOT turn OCR on -- ocr.available() still
+# requires OCR_ENABLED=1 (off by default), so an untouched deployment's build/runtime behavior is
+# otherwise identical. Nixpkgs' `tesseract` package bundles English (eng) trained data only; set
+# OCR_LANGUAGES to something else only once that language's tessdata is actually installed too.
+[phases.setup]
+nixPkgs = ["...", "tesseract"]
