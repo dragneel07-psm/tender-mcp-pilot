@@ -1,6 +1,5 @@
 """Regression tests for the HTTP API -- previously entirely untested (audit §16). Runs a real
 ThreadingHTTPServer against an isolated data directory; no test here touches a live government site."""
-import base64
 import json
 import os
 import tempfile
@@ -31,18 +30,16 @@ class ApiTestBase(unittest.TestCase):
         # config.load_dotenv() already loaded this repo's real .env (including live WhatsApp
         # credentials) into os.environ by the time this process started -- clear everything each
         # test might be sensitive to so tests reflect a clean environment, not this machine's.
-        env_keys = ("REQUIRE_AUTH", "APP_USERNAME", "APP_PASSWORD", "HOST",
-                    "WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT", "WHATSAPP_TEMPLATE_NAME",
-                    "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW_SECONDS")
+        env_keys = ("HOST", "WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT",
+                    "WHATSAPP_TEMPLATE_NAME", "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW_SECONDS")
         self._orig_env = {k: os.environ.get(k) for k in env_keys}
-        os.environ["REQUIRE_AUTH"] = "0"
         # Milestone 12: every test in this file shares one client IP (127.0.0.1) across many
         # requests within one pytest run's short wall-clock window -- disabled here so the rate
         # limiter's own default doesn't make unrelated API tests flaky. Re-enabled explicitly (and
         # ratelimit._WINDOWS cleared) by the tests that actually exercise rate limiting.
         os.environ["RATE_LIMIT_REQUESTS"] = "0"
         for k in env_keys:
-            if k not in ("REQUIRE_AUTH", "RATE_LIMIT_REQUESTS"): os.environ.pop(k, None)
+            if k != "RATE_LIMIT_REQUESTS": os.environ.pop(k, None)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Api)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -59,11 +56,10 @@ class ApiTestBase(unittest.TestCase):
 
     def url(self, path): return f"http://127.0.0.1:{self.port}{path}"
 
-    def request(self, method, path, body=None, headers=None, auth=None):
+    def request(self, method, path, body=None, headers=None):
         data = json.dumps(body).encode() if body is not None else None
         headers = dict(headers or {})
         if data is not None: headers["Content-Type"] = "application/json"
-        if auth: headers["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
         req = urllib.request.Request(self.url(path), data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
@@ -74,7 +70,7 @@ class ApiTestBase(unittest.TestCase):
             except json.JSONDecodeError: return exc.code, body
 
 
-class HealthAndAuthTests(ApiTestBase):
+class HealthAndBasicRoutingTests(ApiTestBase):
     def test_health_is_always_reachable(self):
         status, payload = self.request("GET", "/health")
         self.assertEqual(status, 200)
@@ -89,28 +85,6 @@ class HealthAndAuthTests(ApiTestBase):
         status, body = self.request("GET", "/")
         self.assertEqual(status, 200)
         self.assertIn(b"<!doctype html", body[:20].lower())
-
-    def test_auth_required_rejects_missing_credentials(self):
-        os.environ["REQUIRE_AUTH"] = "1"; os.environ["APP_USERNAME"] = "admin"; os.environ["APP_PASSWORD"] = "secret"
-        status, _ = self.request("GET", "/sources")
-        self.assertEqual(status, 401)
-
-    def test_auth_required_accepts_correct_credentials(self):
-        os.environ["REQUIRE_AUTH"] = "1"; os.environ["APP_USERNAME"] = "admin"; os.environ["APP_PASSWORD"] = "secret"
-        status, payload = self.request("GET", "/sources", auth=("admin", "secret"))
-        self.assertEqual(status, 200)
-        self.assertEqual(payload, [])
-
-    def test_auth_required_rejects_wrong_password(self):
-        os.environ["REQUIRE_AUTH"] = "1"; os.environ["APP_USERNAME"] = "admin"; os.environ["APP_PASSWORD"] = "secret"
-        status, _ = self.request("GET", "/sources", auth=("admin", "wrong"))
-        self.assertEqual(status, 401)
-
-    def test_health_bypasses_auth_even_when_required(self):
-        os.environ["REQUIRE_AUTH"] = "1"; os.environ["APP_USERNAME"] = "admin"; os.environ["APP_PASSWORD"] = "secret"
-        status, payload = self.request("GET", "/health")
-        self.assertEqual(status, 200)
-        self.assertEqual(payload, {"status": "ok"})
 
 
 class SourcesEndpointTests(ApiTestBase):

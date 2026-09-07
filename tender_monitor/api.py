@@ -1,9 +1,7 @@
 """The HTTP API and dashboard-serving handler."""
-import base64
 import json
 import os
 import re
-import secrets
 import threading
 import urllib.parse
 from datetime import datetime, timezone
@@ -20,27 +18,13 @@ class Api(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Cache-Control", "no-store")
     def rate_limited(self):
-        # Milestone 12 (audit §13): checked before require_auth() so a leaked password can't be
-        # used to hammer the API past this limit either -- volume is throttled regardless of
-        # whether the request would have authenticated. /health is exempt: Railway's own
-        # healthcheck polls it and must never be capable of tripping this.
+        # /health is exempt: Railway's own healthcheck polls it and must never be capable of
+        # tripping this.
         if self.path.split("?",1)[0] == "/health": return False
         if ratelimit.allow(self.client_address[0]): return False
         self.send_response(429); self.security_headers()
         self.send_header("Retry-After", os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")); self.end_headers()
         return True
-    def require_auth(self):
-        if self.path.split("?",1)[0] == "/health": return True
-        username=os.getenv("APP_USERNAME", ""); password=os.getenv("APP_PASSWORD", "")
-        required=os.getenv("REQUIRE_AUTH", "1" if os.getenv("HOST") == "0.0.0.0" else "0") == "1"
-        if not username and not password and not required: return True
-        if not username or not password:
-            self.send_response(503); self.security_headers(); self.end_headers(); return False
-        header=self.headers.get("Authorization", "")
-        expected=base64.b64encode(f"{username}:{password}".encode()).decode()
-        if header.startswith("Basic ") and secrets.compare_digest(header[6:], expected): return True
-        self.send_response(401); self.security_headers(); self.send_header("WWW-Authenticate", 'Basic realm="Notice Feed"'); self.end_headers()
-        return False
     def json_body(self):
         length=int(self.headers.get("Content-Length", "0"))
         if length < 1 or length > 65536: raise ValueError("Request body must be between 1 and 65536 bytes.")
@@ -49,7 +33,6 @@ class Api(BaseHTTPRequestHandler):
         data=json.dumps(payload, ensure_ascii=False).encode(); self.send_response(status_code); self.security_headers(); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_GET(self):
         if self.rate_limited(): return
-        if not self.require_auth(): return
         path, _, qs=self.path.partition("?"); params=urllib.parse.parse_qs(qs)
         if path == "/" or re.fullmatch(r"/source/[a-z0-9-]+", path):
             data=(ROOT / "dashboard.html").read_bytes()
@@ -98,7 +81,6 @@ class Api(BaseHTTPRequestHandler):
         self.respond({"error":"not found"},404)
     def do_POST(self):
         if self.rate_limited(): return
-        if not self.require_auth(): return
         if self.path == "/watchlists":
             try:
                 payload=self.json_body()
@@ -143,7 +125,6 @@ class Api(BaseHTTPRequestHandler):
         self.respond({"marked_seen":count})
     def do_PATCH(self):
         if self.rate_limited(): return
-        if not self.require_auth(): return
         if self.path == "/settings":
             try:
                 payload=self.json_body()
@@ -183,7 +164,6 @@ class Api(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as exc: self.respond({"error":str(exc)},400)
     def do_DELETE(self):
         if self.rate_limited(): return
-        if not self.require_auth(): return
         watchlist_match=re.fullmatch(r"/watchlists/(wl-[a-f0-9]+)", self.path)
         if watchlist_match:
             with storage.REGISTRY_WRITE_LOCK:
