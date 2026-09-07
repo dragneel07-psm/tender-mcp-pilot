@@ -33,13 +33,12 @@ class ApiTestBase(unittest.TestCase):
         env_keys = ("HOST", "WHATSAPP_API_URL", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_RECIPIENT",
                     "WHATSAPP_TEMPLATE_NAME", "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW_SECONDS")
         self._orig_env = {k: os.environ.get(k) for k in env_keys}
+        for k in env_keys: os.environ.pop(k, None)
         # Milestone 12: every test in this file shares one client IP (127.0.0.1) across many
         # requests within one pytest run's short wall-clock window -- disabled here so the rate
         # limiter's own default doesn't make unrelated API tests flaky. Re-enabled explicitly (and
         # ratelimit._WINDOWS cleared) by the tests that actually exercise rate limiting.
         os.environ["RATE_LIMIT_REQUESTS"] = "0"
-        for k in env_keys:
-            if k != "RATE_LIMIT_REQUESTS": os.environ.pop(k, None)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Api)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

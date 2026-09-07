@@ -120,7 +120,7 @@ The Railway service runs the collector, database, source registry, dashboard, an
    A notice that misses its lookup this cycle just keeps its "collected" date instead of a
    "published" date; it isn't lost.
 
-4. Open the Railway service's public domain. The browser requests the configured company username and password before it can read or change monitoring data.
+4. Open the Railway service's public domain. The dashboard loads directly -- there is no login.
 
 The first Railway start copies the repository's source registry to its Volume and creates a new local database. It then starts collecting notices automatically. There is no login -- the dashboard and API are reachable by anyone who has the URL.
 
