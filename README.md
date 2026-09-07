@@ -73,10 +73,10 @@ Off by default (`AI_EXTRACTION_ENABLED=0`), and only reachable when `DOCUMENT_PR
 
 ## Production hardening
 
-- **Rate limiting**: every API endpoint except `/health` is limited per client IP (`RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_SECONDS`, default 120/60s), checked before authentication so a leaked password can't be used to hammer the API past this either. In-process, single-replica-only (see the Milestone 11 database-migration decision below) -- returns `429` with a `Retry-After` header.
+- **Rate limiting**: every API endpoint except `/health` is limited per client IP (`RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW_SECONDS`, default 120/60s). In-process, single-replica-only (see the Milestone 11 database-migration decision below) -- returns `429` with a `Retry-After` header.
 - **`.env` parsing**: values wrapped in matching quotes (`FOO="bar"`) now have the quotes stripped, since some providers' dashboards paste API keys pre-quoted. Splitting on the first `=` (so a value containing `=` survives intact) was already correct. No backslash-escape or multi-line-value support -- a real, documented limitation of this hand-rolled parser, not something to route around by growing it further.
 - **Per-cycle log correlation**: every collection cycle gets a short id (e.g. `[a1b2c3d4]`), printed on every log line that cycle emits and exposed as `cycle_id` on `GET /collection/status`, so a dashboard-visible failure can be matched back to its exact Railway log lines.
-- **Per-user accounts**: intentionally not built. This remains a single-operator pilot (one shared `APP_USERNAME`/`APP_PASSWORD`); the roadmap's own condition for this work ("if multi-operator use has materialized") hasn't been met by anything shipped in Milestones 1-11.
+- **No login**: the API and dashboard have no authentication of any kind. Anyone who can reach the host (including a public Railway URL) can read and write all data. There is no username/password layer to configure -- if you need to restrict access, do it at the network level (private networking, a reverse-proxy auth layer, an IP allowlist, etc.), outside this app.
 - **Database migration**: see `CHANGELOG.md`'s Milestone 11 entry -- a documented "not yet" decision against real production evidence (replica count, row count, `tenders.db` size), not a deferred TODO.
 
 ## Cloud deployment: Railway
@@ -97,9 +97,6 @@ The Railway service runs the collector, database, source registry, dashboard, an
    NOTICE_PAGE_LOOKUP_LIMIT=15
    NOTICE_PAGE_LOOKUP_WORKERS=5
    NOTICE_PAGE_LOOKUP_TIMEOUT_SECONDS=15
-   REQUIRE_AUTH=1
-   APP_USERNAME=your-company-login-name
-   APP_PASSWORD=a-long-unique-password
    WHATSAPP_API_URL=...
    WHATSAPP_ACCESS_TOKEN=...
    WHATSAPP_RECIPIENT=...
@@ -123,9 +120,9 @@ The Railway service runs the collector, database, source registry, dashboard, an
    A notice that misses its lookup this cycle just keeps its "collected" date instead of a
    "published" date; it isn't lost.
 
-4. Open the Railway service's public domain. The browser requests the configured company username and password before it can read or change monitoring data.
+4. Open the Railway service's public domain. The dashboard loads directly -- there is no login.
 
-The first Railway start copies the repository's source registry to its Volume and creates a new local database. It then starts collecting notices automatically. The Railway `/health` endpoint is intentionally unauthenticated for the provider's health check; all dashboard and API data require the company credentials.
+The first Railway start copies the repository's source registry to its Volume and creates a new local database. It then starts collecting notices automatically. There is no login -- the dashboard and API are reachable by anyone who has the URL.
 
 ## Important pilot limitation
 

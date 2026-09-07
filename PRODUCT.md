@@ -11,8 +11,8 @@ web
 A small internal team (a handful of people, not a single solo operator) at a company that bids on
 Nepali government procurement — day-to-day they check the dashboard for new tender notices,
 especially ones needing ICT/electronics/networking/machinery equipment, so they can follow up and
-bid before a deadline. Auth today is a single shared HTTP Basic credential (`APP_USERNAME`/
-`APP_PASSWORD`), consistent with a small trusted team rather than public/multi-tenant access.
+bid before a deadline. There is no login -- the dashboard and API are open to anyone who can reach
+the host, consistent with a small trusted team rather than public/multi-tenant access.
 
 ## Product Purpose
 

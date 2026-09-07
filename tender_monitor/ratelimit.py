@@ -1,5 +1,6 @@
 """Milestone 12: a minimal in-process rate limiter, closing audit §13's "no rate limiting
-anywhere -- a leaked password allows unlimited API hammering" gap.
+anywhere -- unlimited API hammering" gap. (The API has no auth of any kind, so this is the
+only thing standing between a client and unbounded request volume.)
 
 A fixed-window counter per client IP, not a token bucket -- simpler, and precise enough for a
 single-operator pilot app guarding against brute-force/hammering, not a public-facing
